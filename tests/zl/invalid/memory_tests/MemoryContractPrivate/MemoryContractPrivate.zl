@@ -1,0 +1,23 @@
+// Regression fixture - invalid/memory_tests - MemoryContractPrivate
+//
+// The compiler is a contract method's only caller, but the contract itself is
+// a public surface: a private release is a domain the compiler cannot promise
+// to call. Expected: a compile error at the method naming the contract
+// method, exit 1.
+//
+// Valid counterpart: tests/zl/valid/memory_tests/MemoryContract/.
+
+memory PrivateRelease {
+    public func acquire(MemoryShape shape): Option<MemorySlot> {
+        return new None<MemorySlot>()
+    }
+
+    private func release(MemorySlot slot): void {
+    }
+}
+
+class MemoryContractPrivate {
+    func main(): void {
+        log("unreachable")
+    }
+}

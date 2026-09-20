@@ -6,12 +6,10 @@
 // a compile error naming the owner and the active borrow, exit 1.
 //
 // Valid counterpart: tests/zl/valid/ownership_tests/OwnedBorrowShared.zl.
+// The Ticket type is this case's helper module (Ticket.zl, sibling of the
+// entry): one primary type per file, imported by name.
 
-class Ticket {
-    public func label(): string {
-        return "ticket"
-    }
-}
+import Ticket
 
 class MoveWhileBorrowed {
     static func consume(owned Ticket t): void {}

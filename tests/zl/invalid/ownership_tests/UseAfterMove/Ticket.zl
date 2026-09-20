@@ -1,0 +1,9 @@
+// Helper module for the UseAfterMove fixture - declares no entry point, so
+// the regression runner treats this directory's UseAfterMove.zl as the case.
+// One primary type per file: the entry imports this module by name.
+
+class Ticket {
+    public func label(): string {
+        return "ticket"
+    }
+}

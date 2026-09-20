@@ -1,0 +1,24 @@
+// Helper module for the AnnotationRules fixture - declares no entry point,
+// so the regression runner treats this directory's AnnotationRules.zl as the
+// case. One primary type per file: the entry imports this module by name.
+//
+// The @Deprecated class and the @Deprecated + @SuppressWarnings method: the
+// entry calls both, and the suppression keeps the call warning-free - which
+// is the observable behaviour this fixture pins.
+
+@Deprecated
+class Legacy {
+    public func speak(): string {
+        return "legacy"
+    }
+
+    @Deprecated
+    public func whisper(): string {
+        return "psst"
+    }
+
+    @SuppressWarnings("deprecation")
+    public func whisperQuietly(): string {
+        return this.whisper()
+    }
+}

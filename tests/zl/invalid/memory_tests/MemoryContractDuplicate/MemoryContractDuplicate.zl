@@ -1,0 +1,26 @@
+// Regression fixture - invalid/memory_tests - MemoryContractDuplicate
+//
+// The contract is a set, not an overload family: two acquires have no
+// meaning (which one would the compiler call?). Expected: a compile error
+// naming 'acquire' as declared more than once, exit 1.
+//
+// Valid counterpart: tests/zl/valid/memory_tests/MemoryContract/.
+
+memory TwoAcquires {
+    public func acquire(MemoryShape shape): Option<MemorySlot> {
+        return new None<MemorySlot>()
+    }
+
+    public func acquire(MemoryShape shape): Option<MemorySlot> {
+        return new None<MemorySlot>()
+    }
+
+    public func release(MemorySlot slot): void {
+    }
+}
+
+class MemoryContractDuplicate {
+    func main(): void {
+        log("unreachable")
+    }
+}

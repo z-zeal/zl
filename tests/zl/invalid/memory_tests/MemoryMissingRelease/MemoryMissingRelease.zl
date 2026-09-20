@@ -1,0 +1,20 @@
+// Regression fixture - invalid/memory_tests - MemoryMissingRelease
+//
+// The Phase 1 exit criterion: a memory block with a missing release is a
+// compile error with a location. acquire alone is not a contract; every
+// domain must provide both required methods. Expected: a compile error at
+// the `memory` line naming 'release' and the required signature, exit 1.
+//
+// Valid counterpart: tests/zl/valid/memory_tests/MemoryContract/.
+
+memory NoRelease {
+    public func acquire(MemoryShape shape): Option<MemorySlot> {
+        return new None<MemorySlot>()
+    }
+}
+
+class MemoryMissingRelease {
+    func main(): void {
+        log("unreachable")
+    }
+}

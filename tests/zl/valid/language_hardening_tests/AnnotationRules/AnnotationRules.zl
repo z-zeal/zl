@@ -1,0 +1,61 @@
+// ============================================================================
+// Regression fixture - valid/language_hardening_tests - AnnotationRules
+//
+// Every known annotation, used in a target it is allowed on, in one program:
+// @Deprecated on a class and on a method, @SuppressWarnings("deprecation")
+// on the method that calls the deprecated one, and @Override on a real
+// override. The invalid halves pin the registry's rejections:
+// invalid/syntax_errors/UnknownAnnotation (an unknown name is an error),
+// invalid/semantic_errors/AnnotationTargetClass and
+// AnnotationTargetConstructor (a known name in the wrong position).
+//
+// The helper modules live in this case's directory, one primary type per
+// file: Animal.zl and Legacy.zl, imported by name.
+//
+// The registry itself: include/zl/parser/annotation_rules.hpp; the target
+// rules are checker-side (TypeChecker::validateAnnotationTargets).
+// ============================================================================
+
+import Animal
+import Legacy
+
+class Loud extends Animal {
+    @Override
+    public func speak(): string {
+        return "LOUD"
+    }
+}
+
+class AnnotationRules {
+    @Deprecated
+    public func oldPath(): string {
+        return "old"
+    }
+
+    @SuppressWarnings("deprecation")
+    public func callOldPath(): string {
+        return this.oldPath()
+    }
+
+    // Every deprecated use lives under a @SuppressWarnings method, so this
+    // fixture's output is clean - what it pins is that the annotated forms
+    // *compile and run*, with the suppression behaving as one.
+    @SuppressWarnings("deprecation")
+    public func deprecatedUses(): string {
+        var legacy = new Legacy()
+        if (legacy.speak() != "legacy") { throw new Exception("AnnotationRules: deprecated class broken") }
+        if (legacy.whisperQuietly() != "psst") { throw new Exception("AnnotationRules: suppressed call broken") }
+        return legacy.speak() + "/" + legacy.whisperQuietly()
+    }
+
+    func main(): void {
+        var loud = new Loud()
+        if (loud.speak() != "LOUD") { throw new Exception("AnnotationRules: override broken") }
+
+        var self = new AnnotationRules()
+        if (self.callOldPath() != "old") { throw new Exception("AnnotationRules: deprecated method broken") }
+        if (self.deprecatedUses() != "legacy/psst") { throw new Exception("AnnotationRules: suppressed uses broken") }
+
+        log("annotation rules ok")
+    }
+}

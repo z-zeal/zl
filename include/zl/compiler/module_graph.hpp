@@ -30,9 +30,10 @@ public:
     [[nodiscard]] bool isLoading(const std::string& dottedName) const;
     void endLoading(const std::string& dottedName);
 
-    // Registers class provenance and stamps each class with the imports that
+    // Registers type-declaration provenance (classes and memory declarations
+    // share one namespace) and stamps each declaration with the imports that
     // were visible in its source module before that module is flattened.
-    // Throws ModuleError through the supplied callback when duplicate class
+    // Throws ModuleError through the supplied callback when duplicate
     // ownership is detected.
     template <typename ErrorFactory>
     void registerDeclarations(Program& program,
@@ -58,17 +59,21 @@ void ModuleGraph::registerDeclarations(Program& program,
     }
 
     for (const auto& decl : program.declarations) {
-        if (decl->kind != NodeKind::ClassDecl) continue;
-        const auto* cls = static_cast<const ClassDecl*>(decl.get());
-        auto [it, inserted] = classOwners_.emplace(cls->name, dottedName);
+        if (decl->kind != NodeKind::ClassDecl && decl->kind != NodeKind::MemoryDecl) continue;
+        const std::string name = decl->kind == NodeKind::ClassDecl
+            ? static_cast<const ClassDecl*>(decl.get())->name
+            : static_cast<const MemoryDecl*>(decl.get())->name;
+        auto [it, inserted] = classOwners_.emplace(name, dottedName);
         if (!inserted) {
-            throw makeDuplicateError(cls->name, it->second, dottedName);
+            throw makeDuplicateError(name, it->second, dottedName);
         }
     }
 
     for (auto& decl : program.declarations) {
         if (decl->kind == NodeKind::ClassDecl) {
             static_cast<ClassDecl*>(decl.get())->visibleImports = ownImports;
+        } else if (decl->kind == NodeKind::MemoryDecl) {
+            static_cast<MemoryDecl*>(decl.get())->visibleImports = ownImports;
         }
     }
 }

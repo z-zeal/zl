@@ -11,55 +11,16 @@
 // inheritance, @Override, static methods), user generic classes, Option and
 // Result, exceptions with catch-by-type, and the auto-imported zl.lang
 // builtins.
+//
+// The declarations it exercises live in this case's directory, one primary
+// type per file: Point.zl (a record), Animal.zl (a base class), Dog.zl (an
+// @Override subclass), Box.zl (a user generic class). The entry imports each
+// by name.
 // ============================================================================
-
-data Point {
-    x: int
-    y: int
-}
-
-class Animal {
-    public string name
-
-    func Animal(string name): void {
-        this.name = name
-    }
-
-    public func speak(): string {
-        return "..."
-    }
-
-    public func describe(): string {
-        return this.name + " says " + this.speak()
-    }
-}
-
-class Dog extends Animal {
-    func Dog(string name): void {
-        super(name)
-    }
-
-    @Override
-    public func speak(): string {
-        return "Woof"
-    }
-}
-
-class Box<T> {
-    T value
-
-    func Box(T value): void {
-        this.value = value
-    }
-
-    public func get(): T {
-        return this.value
-    }
-
-    public func replace(T value): void {
-        this.value = value
-    }
-}
+import Point
+import Animal
+import Dog
+import Box
 
 class AllFeatures {
     static func fib(int n): int {

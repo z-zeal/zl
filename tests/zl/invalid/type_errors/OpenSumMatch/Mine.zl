@@ -1,0 +1,9 @@
+// Helper module for the OpenSumMatch fixture - declares no entry point, so
+// the regression runner treats this directory's OpenSumMatch.zl as the case.
+// One primary type per file: the entry imports this module by name.
+//
+// The subclass is what reopens the built-in sum: importing it is enough for
+// the checker to see that Result<int,string> has a case beyond Ok and Err.
+
+class Mine extends Result<int, string> {
+}

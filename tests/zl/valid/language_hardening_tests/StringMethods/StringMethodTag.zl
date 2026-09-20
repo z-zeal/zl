@@ -1,0 +1,19 @@
+// Helper module for the StringMethods fixture - declares no entry point, so
+// the regression runner treats this directory's StringMethods.zl as the case.
+// One primary type per file: the entry imports this module by name.
+//
+// A generic class whose method calls methods on a concrete `string` field: the
+// body is checked per instantiation, and every instantiation must resolve the
+// surface the same way (no instantiation may leave a stale resolution behind).
+
+class StringMethodTag<T> {
+    public string name
+
+    func StringMethodTag(string initial): void {
+        this.name = initial
+    }
+
+    public func label(): string {
+        return this.name.trim().upper() + "/" + this.name.length()
+    }
+}

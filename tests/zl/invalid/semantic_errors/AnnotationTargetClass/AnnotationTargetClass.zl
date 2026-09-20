@@ -1,0 +1,17 @@
+// Regression fixture - invalid/semantic_errors - AnnotationTargetClass
+//
+// The target half of the annotation registry: @Override targets methods
+// only, so annotating a class declaration is an error even though the name
+// is known. Expected: a compile error at the annotation's line naming the
+// target and the annotations allowed there, exit 1.
+//
+// Name checks happen in the parser (syntax_errors/UnknownAnnotation);
+// target checks happen in the checker, where the declaration kind is fully
+// known.
+
+@Override
+class AnnotationTargetClass {
+    func main(): void {
+        log("unreachable")
+    }
+}

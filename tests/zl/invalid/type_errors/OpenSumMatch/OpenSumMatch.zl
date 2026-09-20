@@ -6,9 +6,11 @@
 // match must say what a `Mine` does. Reading a reopened hierarchy as closed
 // would make this arm set silently swallow a value it does not describe, so
 // the checker keeps the parent member and reports it as uncovered instead.
+//
+// The reopening subclass lives in this case's helper module (Mine.zl,
+// sibling of the entry): one primary type per file, imported by name.
 
-class Mine extends Result<int, string> {
-}
+import Mine
 
 class OpenSumMatch {
     static func describe(Result<int, string> r): string {

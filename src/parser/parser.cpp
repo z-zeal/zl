@@ -1,4 +1,5 @@
 #include "zl/parser/parser.hpp"
+#include "zl/parser/annotation_rules.hpp"
 #include "zl/parser/expression_parser.hpp"
 
 #include <cctype>
@@ -135,11 +136,12 @@ NodePtr Parser::parseImportDecl() {
 }
 
 NodePtr Parser::parseDeclaration() {
-    // Class-level annotations (currently only @Deprecated is meaningful
-    // here) come before the 'class' keyword itself, e.g. `@Deprecated
-    // class Old { }`. Interfaces/data types don't support annotations today
-    // - not part of the spec, so any '@' before them just falls through to
-    // the normal error below.
+    // Class-level annotations come before the 'class' keyword itself, e.g.
+    // `@Deprecated class Old { }`. The names are checked against the registry
+    // (zl/parser/annotation_rules.hpp) inside parseAnnotations - an unknown
+    // annotation is an error, not a silent no-op. Interfaces/data types don't
+    // support annotations - not part of the spec, so any '@' before them
+    // falls through to the normal error below.
     if (check(TokenType::AT)) {
         std::vector<Annotation> annotations = parseAnnotations();
         if (!check(TokenType::KW_CLASS)) {
@@ -151,7 +153,15 @@ NodePtr Parser::parseDeclaration() {
     if (check(TokenType::KW_INTERFACE)) return parseInterfaceDecl();
     if (check(TokenType::KW_DATA)) return parseDataDecl();
     if (check(TokenType::KW_ENUM)) return parseEnumDecl();
-    error("Expected a 'class', 'interface', 'data', or 'enum' declaration at file scope");
+    // `memory` is a contextual keyword (docs/memory-domains.md §5.1): it
+    // opens a declaration only here, at file scope, when followed by a name -
+    // so a program where `memory` is a plain identifier still parses. The
+    // identifier path below is unchanged for every other spelling.
+    if (check(TokenType::IDENTIFIER) && peek().lexeme == "memory" &&
+        peekNext().type == TokenType::IDENTIFIER) {
+        return parseMemoryDecl();
+    }
+    error("Expected a 'class', 'interface', 'data', 'enum', or 'memory' declaration at file scope");
 }
 
 // ---------- annotations ----------
@@ -161,6 +171,17 @@ std::vector<Annotation> Parser::parseAnnotations() {
     while (check(TokenType::AT)) {
         Token atTok = advance(); // consume '@'
         Token nameTok = expect(TokenType::IDENTIFIER, "Expected an annotation name after '@'");
+
+        // Unknown names are an error, not a silent no-op: an annotation the
+        // compiler does not know cannot be validated, target-checked or
+        // consumed, so accepting it would bury the typo (`@memroy(Pool)`)
+        // until the program behaves inexplicably. See
+        // include/zl/parser/annotation_rules.hpp for the table.
+        if (!annotations::isKnown(nameTok.lexeme)) {
+            throw ParseError("unknown annotation '@" + nameTok.lexeme + "' at line " +
+                             std::to_string(nameTok.line) + " - known annotations are: " +
+                             annotations::knownNames());
+        }
 
         Annotation ann;
         ann.name = nameTok.lexeme;
@@ -492,6 +513,87 @@ NodePtr Parser::parseEnumDecl() {
     }
 
     expect(TokenType::RBRACE, "Expected '}' to close enum '" + nameTok.lexeme + "'");
+    return node;
+}
+
+// memory Name { ... } - a user-written memory-domain declaration
+// (docs/memory-domains.md §5.1). The contract itself (required public
+// acquire/release, their signatures) is validated by
+// TypeChecker::registerMemoryDeclaration; the parser only enforces the
+// declaration *shape*: members are fields and instance funcs - the forms a
+// class body takes, minus the ones a domain has no use for. Each rejection
+// names the form, per §5.1's "a specific error, not a general 'not allowed
+// here'".
+NodePtr Parser::parseMemoryDecl() {
+    Token memoryTok = advance(); // consume the contextual 'memory'
+    Token nameTok = expect(TokenType::IDENTIFIER, "Expected a memory declaration name after 'memory'");
+    expect(TokenType::LBRACE, "Expected '{' after memory declaration name");
+
+    auto node = std::make_unique<MemoryDecl>();
+    node->line = memoryTok.line;
+    node->name = nameTok.lexeme;
+
+    while (!check(TokenType::RBRACE) && !isAtEnd()) {
+        if (check(TokenType::AT)) {
+            error("Annotations are not allowed on memory declaration members");
+        }
+        if (check(TokenType::KW_STATIC)) {
+            error("'static' is not allowed in memory declaration '" + nameTok.lexeme +
+                  "' - a domain's state and contract belong to the domain object");
+        }
+        if (check(TokenType::KW_ASYNC)) {
+            error("'async' is not allowed in memory declaration '" + nameTok.lexeme +
+                  "' - contract methods are called by the compiler, never awaited");
+        }
+        if (check(TokenType::KW_OPERATOR)) {
+            error("Operators are not allowed in memory declaration '" + nameTok.lexeme + "'");
+        }
+        if (check(TokenType::KW_CLASS) || check(TokenType::KW_INTERFACE) ||
+            check(TokenType::KW_DATA) || check(TokenType::KW_ENUM)) {
+            error("Nested declarations are not allowed inside memory declaration '" + nameTok.lexeme + "'");
+        }
+        AccessModifier access = parseAccessModifier();
+        if (check(TokenType::KW_STATIC)) {
+            error("'static' is not allowed in memory declaration '" + nameTok.lexeme +
+                  "' - a domain's state and contract belong to the domain object");
+        }
+        if (check(TokenType::KW_ASYNC)) {
+            error("'async' is not allowed in memory declaration '" + nameTok.lexeme +
+                  "' - contract methods are called by the compiler, never awaited");
+        }
+        if (check(TokenType::KW_FUNC)) {
+            // `func(...): Return name` is a function-typed field, not a named
+            // function - same disambiguation as parseClassMember.
+            if (peekNext().type == TokenType::LPAREN) {
+                node->members.push_back(parseTypedVarDecl(access));
+                continue;
+            }
+            node->members.push_back(parseFunctionDecl(access, {}));
+            continue;
+        }
+        if (check(TokenType::KW_VAR) || check(TokenType::KW_LET)) {
+            node->members.push_back(parseVarDecl(access));
+            continue;
+        }
+        if (looksLikeTypedDeclStart()) {
+            node->members.push_back(parseTypedVarDecl(access));
+            continue;
+        }
+        error("Expected a func or a field inside memory declaration '" + nameTok.lexeme + "'");
+    }
+
+    expect(TokenType::RBRACE, "Expected '}' to close memory declaration '" + nameTok.lexeme + "'");
+
+    // Stamp ownership, and flag a constructor-shaped func by its name the way
+    // parseClassDecl does - registerMemoryDeclaration rejects it explicitly
+    // (a domain is never instantiated by user code), so the flag must exist.
+    for (auto& member : node->members) {
+        if (member->kind != NodeKind::FunctionDecl) continue;
+        auto* fn = static_cast<FunctionDecl*>(member.get());
+        fn->ownerClassName = node->name;
+        fn->isConstructor = (fn->name == node->name);
+    }
+
     return node;
 }
 

@@ -1,0 +1,28 @@
+// ============================================================================
+// Regression fixture - valid/memory_tests - MemoryContract
+//
+// The Phase 1 memory-domain contract skeleton (docs/memory-domains.md §5.1,
+// §9 Phase 1): a `memory` declaration parses, the compiler validates its
+// contract - required acquire/release, the optional reset/exhausted/
+// onCollect, each public, each with its exact signature - and the program
+// still runs. The declaration under test lives in this case's helper module
+// (FrameArena.zl, sibling of the entry): one primary type per file, imported
+// by name.
+//
+// The invalid halves live in tests/zl/invalid/memory_tests/, one fixture per
+// rule (MemoryMissingRelease, MemoryContractSignature, MemoryContractPrivate,
+// MemoryContractDuplicate, MemoryPublicHelper, MemoryPublicField,
+// MemoryConstructor, MemoryStaticMember, MemoryConstructRefused,
+// MemoryExtendsRefused, MalformedMemoryDecl).
+// ============================================================================
+
+import FrameArena
+
+class MemoryContract {
+    func main(): void {
+        // The declaration is checked but inert: no allocation exists yet, so
+        // there is no value of FrameArena to hold - only the proof that the
+        // contract above typechecks, which is this program running at all.
+        log("memory contract ok")
+    }
+}

@@ -1,0 +1,16 @@
+// Helper module for the AllFeatures fixture - declares no entry point, so the
+// regression runner treats this directory's AllFeatures.zl as the case. One
+// primary type per file: this module imports the Animal module it extends.
+
+import Animal
+
+class Dog extends Animal {
+    func Dog(string name): void {
+        super(name)
+    }
+
+    @Override
+    public func speak(): string {
+        return "Woof"
+    }
+}

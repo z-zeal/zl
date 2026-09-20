@@ -1,0 +1,17 @@
+// Helper module for the IncompleteStubRefusal fixture - declares no entry
+// point, so the regression runner treats this directory's
+// IncompleteStubRefusal.zl as the case. One primary type per file: the entry
+// imports this module by name.
+
+class Box<T> {
+    public int calls
+
+    public func bump(T v): void {
+        this.calls = this.calls + 1
+        // Generic arithmetic has no MIR spelling: lowering stops here and
+        // marks this function incomplete.
+        var x = v + v
+        this.calls = this.calls + 10
+        log("unreachable " + x)
+    }
+}

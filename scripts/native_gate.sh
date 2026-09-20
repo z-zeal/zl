@@ -9,7 +9,7 @@ trap 'rm -f "$OUT_CPP" "$OUT_BIN"' EXIT
 "${BUILD}/zl-ir-tests"
 "${BUILD}/zl-native-compiler-tests"
 "${BUILD}/zl-native-boundary-tests"
-"${BUILD}/zl_language" "${ROOT}/tests/zl/valid/core_tests/AllFeatures.zl" >/dev/null
+"${BUILD}/zl_language" "${ROOT}/tests/zl/valid/core_tests/AllFeatures/AllFeatures.zl" >/dev/null
 
 "${BUILD}/zl_language" --emit-native "$OUT_CPP" "${ROOT}/tests/zl/valid/native/NumericKernel.zl"
 c++ -std=c++17 -O3 -DNDEBUG -I"${ROOT}/include" "$OUT_CPP" "${ROOT}/benchmarks/native_numeric_benchmark.cpp" -o "$OUT_BIN"

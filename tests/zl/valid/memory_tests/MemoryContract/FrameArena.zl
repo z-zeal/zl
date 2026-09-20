@@ -1,0 +1,48 @@
+// The domain under test for the MemoryContract fixture - the file's primary
+// type is the `memory` declaration itself, so the entry imports it by name
+// (the same primary-name contract a class module follows).
+//
+// This is the Phase 1 contract skeleton (docs/memory-domains.md §5.1): the
+// declaration parses, the compiler validates the contract below - required
+// acquire/release, the optional reset/exhausted/onCollect, each public, each
+// with its exact signature - and nothing consumes it yet. No allocation, no
+// region, no codegen: `new FrameArena()` is refused with a message naming the
+// phase that removes the refusal (see the ConstructRefused fixture). What
+// this module pins is that a *correct* contract compiles on every backend.
+//
+// The state and helper show the non-contract surface a domain may carry: a
+// private counter field and a private helper method, both invisible outside.
+
+memory FrameArena {
+    private int resets = 0
+
+    // Required. Phase 1 has no registry to hand out slots, so the honest
+    // acquire answer is None - the runtime registry (a later phase) replaces
+    // this body, not this signature.
+    public func acquire(MemoryShape shape): Option<MemorySlot> {
+        return new None<MemorySlot>()
+    }
+
+    // Required. Called when a live owner count can no longer exist.
+    public func release(MemorySlot slot): void {
+    }
+
+    // Optional. Bulk release at region exit; counted so a later phase can
+    // assert the call happened.
+    public func reset(): void {
+        this.resets = this.resets + 1
+    }
+
+    // Optional. What to do when acquire has no slot. The runtime default
+    // raises RuntimeError; a domain that wants another policy spells it.
+    public func exhausted(MemoryShape shape): void {
+    }
+
+    // Optional. Observes the global trace; may not free anything here.
+    public func onCollect(MemoryStats stats): void {
+    }
+
+    private func bump(): void {
+        this.resets = this.resets + 1
+    }
+}

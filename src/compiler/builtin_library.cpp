@@ -1637,6 +1637,40 @@ class Function {
 }
 )ZL";
 
+// ---------------------------------------------------------------------------
+// Memory-domain contract types (docs/memory-domains.md §4.1, §5.1).
+//
+// A `memory` declaration's contract signatures name these three types, so
+// they must resolve like any class. They are deliberately inert: no native
+// accepts or returns one, nothing at runtime constructs a real one yet, and
+// a fabricated instance (`new MemorySlot()`) cannot be observed by anything
+// - opacity is a promise the runtime registry (a later phase) will enforce
+// by being the only issuer. Their shape is fixed now so the contract a user
+// writes in Phase 1 is the contract the runtime honours later:
+//   MemoryShape  what acquire/exhausted are asked for: the box kind, the
+//                class, the field count - never a byte size
+//   MemorySlot   the opaque registry token a domain hands back and takes
+//                back: {domainId, index, generation}
+//   MemoryStats  what onCollect observes from the global trace
+// ---------------------------------------------------------------------------
+constexpr std::string_view kBuiltinMemoryShapeSource = R"ZL(
+class MemoryShape {
+    private func MemoryShape(): void { }
+}
+)ZL";
+
+constexpr std::string_view kBuiltinMemorySlotSource = R"ZL(
+class MemorySlot {
+    private func MemorySlot(): void { }
+}
+)ZL";
+
+constexpr std::string_view kBuiltinMemoryStatsSource = R"ZL(
+class MemoryStats {
+    private func MemoryStats(): void { }
+}
+)ZL";
+
 
 const std::vector<std::string_view> kBuiltinSources = {
     kBuiltinOptionSource,
@@ -1667,6 +1701,9 @@ const std::vector<std::string_view> kBuiltinSources = {
     kBuiltinMethodSource,
     kBuiltinConstructorSource,
     kBuiltinFunctionSource,
+    kBuiltinMemoryShapeSource,
+    kBuiltinMemorySlotSource,
+    kBuiltinMemoryStatsSource,
 };
 
 } // namespace

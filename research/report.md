@@ -244,6 +244,39 @@ verifies clean.
    gap and is fixed too (docs/changelog.md, 2026-09-17). `list`/`map`/`set` are reserved words usable as type names but
    not variable names (P1-4).
 
+### 2.8 Allocation baseline (memory-domains Phase 0, measured 2026-09-19)
+
+The memory-domains plan requires each phase's §10 numbers to land here. The
+[Phase 0 gate](../docs/memory-domains.md#101-phase-0-baseline-measured-2026-09-19)
+asks: `new` throughput, GC pressure, and per-object memory cost, before and
+after making the existing collector pay — no language surface, implementation
+only. Workload: `benchmarks/AllocationBenchmark.zl`, one process per
+configuration (`benchmarks/run_allocation_benchmark.sh`, per-child peak RSS via
+`wait4`, two runs averaged). Machine: 2-core x86-64, 3.9 GB RAM, Linux, g++ 12,
+`-O2`, single-threaded VM. "Before" is `3f1a737` + measurement counters only;
+"after" adds (a) flat `ObjectBox::fields` + per-class `name → index`, (b)
+recycled-box free lists, (c) the growth policy (already in the baseline).
+
+| workload | alloc/s before → after | Δ | collect share before → after | peak RSS before → after | Δ |
+| --- | --- | --- | --- | --- | --- |
+| one-field, keep 1e5 | 133.4k → 135.4k | +2% | 1.1% → 1.1% | 80.9 MB → 66.5 MB | −16% |
+| one-field, keep 1e6 | 129.5k → 120.8k | −7% | 4.3% → 4.2% | 682.3 MB → 559.3 MB | −18% |
+| one-field, churn 1e6 | 146.8k → 141.5k | −4% | 1.4% → 1.8% | 18.4 MB → 18.3 MB | −3% |
+| eight-field, keep 1e5 | 53.6k → 55.3k | +3% | 1.1% → 0.7% | 153.8 MB → 98.0 MB | −36% |
+| eight-field, keep 1e6 | 53.8k → 55.2k | +2% | 4.2% → 2.8% | 1410.5 MB → 874.4 MB | −38% |
+| eight-field, churn 1e6 | 56.8k → 55.2k | −3% | 0.9% → 0.9% | 19.0 MB → 17.8 MB | −6% |
+
+Reading: **the memory win is the flat fields** — peak RSS per kept object
+(Δ keep 1e5 → keep 1e6) drops **703 B → 574 B (−18%)** one-field and
+**1464 B → 905 B (−38%)** eight-field, and the eight-field collect share drops
+4.2% → 2.8% because tracing walks a vector, not a hash table. **Throughput is
+neutral** (every Δ inside two-run variance); recycling's free list hits ~100%
+in churn yet buys no speed — the per-allocation cost is the registry
+`push_back` and the refcount, not the box allocation. Gate verdict (§10.1):
+what (a)+(b)+(c) cannot buy is eager release at scope exit, which is exactly
+what the domain phases exist to measure against this table. Raw rows:
+`benchmarks/results/allocation_{before,after}{,2}.json`.
+
 ---
 
 ## 3. Trade-off analysis

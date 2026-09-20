@@ -29,11 +29,11 @@ file in the diagnostic when it does not hold:
 module error: file /path/to/split_test.zl must define primary type 'split_test'
 ```
 
-The primary type does not have to be a `class`: `class`, `data`, `interface`, and
-`enum` declarations all satisfy the rule, so `Point.zl` may declare `data Point` and
-`Shape.zl` may declare `interface Shape`. Helper declarations may sit alongside it -
-a file whose primary type is `Helpers` may also declare a second class, a `data`, an
-`enum`, and so on, in any order.
+The primary type does not have to be a `class`: `class`, `data`, `interface`,
+`enum`, and `memory` declarations all satisfy the rule, so `Point.zl` may
+declare `data Point` and `Shape.zl` may declare `interface Shape`. Helper
+declarations may sit alongside it - a file whose primary type is `Helpers` may
+also declare a second class, a `data`, an `enum`, and so on, in any order.
 
 ### Why the rule exists
 

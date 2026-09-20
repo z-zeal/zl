@@ -1,0 +1,19 @@
+// Helper module for the AllFeatures fixture - declares no entry point, so the
+// regression runner treats this directory's AllFeatures.zl as the case. One
+// primary type per file: the entry imports this module by name.
+
+class Box<T> {
+    T value
+
+    func Box(T value): void {
+        this.value = value
+    }
+
+    public func get(): T {
+        return this.value
+    }
+
+    public func replace(T value): void {
+        this.value = value
+    }
+}

@@ -1,0 +1,18 @@
+// Regression fixture - invalid/syntax_errors - UnknownAnnotation
+//
+// The Phase 1 exit criterion for annotations: an unknown @ name is an error,
+// not a silently-ignored no-op. `@memroy(Pool)` (the docs' own typo example,
+// docs/memory-domains.md §5.5) used to compile and do nothing, so a misspelt
+// annotation was indistinguishable from an absent one. Expected: a parse
+// error at the '@' line listing the known annotations, exit 1.
+//
+// The known-name table: include/zl/parser/annotation_rules.hpp. Target
+// violations (a known name in the wrong place) are the checker's half - see
+// semantic_errors/AnnotationTargetClass, AnnotationTargetConstructor.
+
+@memroy(Pool)
+class UnknownAnnotation {
+    func main(): void {
+        log("unreachable")
+    }
+}

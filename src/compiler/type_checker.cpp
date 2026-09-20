@@ -1290,6 +1290,19 @@ void TypeChecker::check(const Program& program, bool requireMain) {
             shell.name = en->name;
             shell.isEnumType = true;
             semanticModel_.defineClass(std::move(shell));
+        } else if (decl->kind == NodeKind::MemoryDecl) {
+            // A memory declaration shares the type namespace: `memory Pool`
+            // and `class Pool` in one file collide here, exactly as two
+            // classes would. The shape starts as a shell; pass 0b fills it
+            // after validating the domain contract.
+            const auto* mem = static_cast<const MemoryDecl*>(decl.get());
+            if (semanticModel_.hasClass(mem->name)) {
+                typeError("'" + mem->name + "' is declared more than once in this file", mem->line);
+            }
+            ClassShapeInfo shell;
+            shell.name = mem->name;
+            shell.isMemoryDomain = true;
+            semanticModel_.defineClass(std::move(shell));
         }
     }
 
@@ -1302,6 +1315,8 @@ void TypeChecker::check(const Program& program, bool requireMain) {
             registerDataShape(static_cast<const DataDecl*>(decl.get()));
         } else if (decl->kind == NodeKind::EnumDecl) {
             registerEnumShape(static_cast<const EnumDecl*>(decl.get()));
+        } else if (decl->kind == NodeKind::MemoryDecl) {
+            registerMemoryDeclaration(static_cast<const MemoryDecl*>(decl.get()));
         }
     }
 
@@ -1426,6 +1441,12 @@ void TypeChecker::check(const Program& program, bool requireMain) {
             typeError((isData ? "data type '" : "class '") + childName + "' extends unknown type '" + parentName + "'", decl->line);
         }
         const auto* parentShape = semanticModel_.findClass(parentName);
+        if (parentShape && parentShape->isMemoryDomain) {
+            typeError((isData ? "data type '" : "class '") + childName +
+                          "' cannot extend memory declaration '" + parentName +
+                          "' - a domain is not a class-hierarchy member",
+                      decl->line);
+        }
         if (isData && (!parentShape || !parentShape->isDataType)) {
             typeError("data type '" + childName + "' may only extend another data type", decl->line);
         }
@@ -1494,6 +1515,8 @@ void TypeChecker::check(const Program& program, bool requireMain) {
             currentClassTypeParams_.clear();
             for (const auto& member : data->members)
                 checkFunctionDecl(static_cast<const FunctionDecl*>(member.get()));
+        } else if (decl->kind == NodeKind::MemoryDecl) {
+            checkMemoryDeclaration(static_cast<const MemoryDecl*>(decl.get()));
         }
     }
 
@@ -1540,6 +1563,8 @@ void TypeChecker::check(const Program& program, bool requireMain) {
 // ---------------------------------------------------------------------------
 
 void TypeChecker::registerClassShape(const ClassDecl* node) {
+    validateAnnotationTargets(node->annotations, annotations::POS_TYPE_DECL, node->name);
+
     ClassShapeInfo info;
     info.name = node->name;
     info.typeParams = node->typeParams;
@@ -1814,6 +1839,270 @@ void TypeChecker::registerEnumShape(const EnumDecl* node) {
     semanticModel_.defineClass(std::move(info));
 }
 
+// ---------------------------------------------------------------------------
+// Memory declarations (docs/memory-domains.md §4.1, §5.1 - the Phase 1
+// contract skeleton). Nothing consumes a domain yet: registration validates
+// the contract and builds a shape so the contract bodies typecheck like any
+// method body, and nothing downstream emits the declaration. The first
+// consumer (allocation with a domain) lands with the arena phase, which is
+// exactly why the contract is spelled out and checked now, while the only
+// way to be wrong about it is a compile error rather than a runtime one.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The contract surface of a `memory` declaration. Required = the compiler
+// refuses the declaration without it; optional = may be absent, but a
+// declaration that spells it must spell it correctly (a mis-typed optional
+// method is a silent no-op waiting to happen - the same reasoning as the
+// unknown-annotation error).
+struct MemoryContractEntry {
+    const char* name;
+    const char* paramType;   // nullptr = takes no parameter
+    const char* returnType;  // "void", or "Option<MemorySlot>"
+    bool required;
+};
+
+constexpr MemoryContractEntry kMemoryContract[] = {
+    // Required. acquire is called by the compiler's Alloc for one box;
+    // release when a live owner count can no longer exist.
+    {"acquire",   "MemoryShape", "Option<MemorySlot>", true},
+    {"release",   "MemorySlot",  "void",               true},
+    // Optional. Bulk release at region exit; exhaustion policy; a view of
+    // the global trace. Defaults exist in the runtime design (§4.1).
+    {"reset",     nullptr,       "void",               false},
+    {"exhausted", "MemoryShape", "void",               false},
+    {"onCollect", "MemoryStats", "void",               false},
+};
+
+constexpr std::size_t kMemoryContractSize = sizeof(kMemoryContract) / sizeof(kMemoryContract[0]);
+
+const MemoryContractEntry* findMemoryContractEntry(const std::string& name) {
+    for (std::size_t i = 0; i < kMemoryContractSize; ++i) {
+        if (name == kMemoryContract[i].name) return &kMemoryContract[i];
+    }
+    return nullptr;
+}
+
+// True when `annotation` is a bare, unparameterized, non-union spelling of
+// `name` - the only form a contract signature accepts. A parameter spelled
+// `list<MemoryShape>` or `int|MemoryShape` is a different signature, and the
+// contract is fixed (§4.1), so this is an error, not an overload.
+bool isBareTypeNamed(const TypeAnnotation& annotation, const char* name) {
+    return annotation.name == name && annotation.typeArgs.empty() && annotation.unionOf.empty() &&
+           !annotation.functionHasSignature;
+}
+
+bool isVoidReturn(const TypeAnnotation& annotation) {
+    return isBareTypeNamed(annotation, "void");
+}
+
+// The one non-void contract return: Option<MemorySlot>, exactly.
+bool isOptionOfMemorySlot(const TypeAnnotation& annotation) {
+    return annotation.name == "Option" && annotation.typeArgs.size() == 1 &&
+           isBareTypeNamed(annotation.typeArgs[0], "MemorySlot") && annotation.unionOf.empty();
+}
+
+std::string describeMemoryContractSignature(const MemoryContractEntry& entry) {
+    std::string out = "public func ";
+    out += entry.name;
+    out += "(";
+    if (entry.paramType != nullptr) out += entry.paramType;
+    out += "): ";
+    out += entry.returnType;
+    return out;
+}
+
+} // namespace
+
+void TypeChecker::registerMemoryDeclaration(const MemoryDecl* node) {
+    // The parser already rejected statics/asyncs/operators/nested
+    // declarations (and annotations on members); what is left here is the
+    // contract: which members exist, their access, their exact signatures,
+    // and the declaration-shape rules a domain cannot relax (no constructor,
+    // no inheritance - pass 0c).
+
+    ClassShapeInfo info;
+    info.name = node->name;
+    info.isMemoryDomain = true;
+    info.visibleImports = node->visibleImports;
+
+    currentClassName_ = node->name;
+    currentClassTypeParams_.clear();
+
+    // Fields are the domain's state (its counters, its capacity). They are
+    // not part of the public contract - the compiler is the only caller of a
+    // domain - so a public field is the same mistake as a public helper.
+    for (const auto& member : node->members) {
+        if (member->kind != NodeKind::VarDecl) continue;
+        const auto* field = static_cast<const VarDecl*>(member.get());
+        if (field->access == AccessModifier::PUBLIC) {
+            typeError("field '" + node->name + "." + field->name +
+                          "' must not be public in a memory declaration - a domain's state is not "
+                          "part of its contract; make it private",
+                      field->line);
+        }
+        std::string fieldClassName;
+        ZlType fieldType = field->hasExplicitType ? resolveType(field->type, &fieldClassName) : ZlType::UNKNOWN;
+        ClassFieldInfo fieldInfo{fieldType, fieldClassName, field->access};
+        fieldInfo.ownership = field->ownership;
+        fieldInfo.functionHasSignature = fieldType == ZlType::FUNCTION && field->type.functionHasSignature;
+        if (fieldType == ZlType::FUNCTION) {
+            for (const auto& param : field->type.functionParamTypes) {
+                std::string cls;
+                fieldInfo.functionParamTypes.push_back(resolveType(param, &cls));
+                fieldInfo.functionParamClassNames.push_back(std::move(cls));
+            }
+            if (field->type.functionReturnType) {
+                fieldInfo.functionReturnType = resolveType(*field->type.functionReturnType,
+                                                           &fieldInfo.functionReturnClassName);
+            }
+        }
+        info.fields[field->name] = std::move(fieldInfo);
+        info.fieldOrder.push_back(field->name);
+    }
+
+    // The contract methods, checked against the table above, and the private
+    // helpers around them.
+    std::unordered_set<std::string> declaredContract;
+    for (const auto& member : node->members) {
+        if (member->kind != NodeKind::FunctionDecl) continue;
+        const auto* fn = static_cast<const FunctionDecl*>(member.get());
+
+        if (fn->isConstructor) {
+            typeError("memory declaration '" + node->name +
+                          "' cannot declare a constructor - a domain is not instantiated by user code",
+                      fn->line);
+        }
+
+        const MemoryContractEntry* entry = findMemoryContractEntry(fn->name);
+        if (entry == nullptr) {
+            // A private helper is fine; a public one is contract surface the
+            // design does not have (§5.1: fields, private helpers, and the
+            // contract - nothing else).
+            if (fn->access == AccessModifier::PUBLIC) {
+                typeError("method '" + node->name + "." + fn->name +
+                              "' must not be public in a memory declaration - only the contract "
+                              "methods (acquire, release, reset, exhausted, onCollect) may be public; "
+                              "make it private",
+                          fn->line);
+            }
+            continue; // helper signatures are not constrained by the contract
+        }
+
+        if (!declaredContract.insert(fn->name).second) {
+            typeError("memory declaration '" + node->name + "' declares contract method '" + fn->name +
+                          "' more than once",
+                      fn->line);
+        }
+        if (fn->access != AccessModifier::PUBLIC) {
+            typeError("contract method '" + fn->name + "' in memory declaration '" + node->name +
+                          "' must be public - the compiler is its only caller, but it is part of "
+                          "the domain's contract surface",
+                      fn->line);
+        }
+
+        // Signature, compared on the written annotation so the diagnostic can
+        // quote the source spelling.
+        std::string declared = "func " + fn->name + "(";
+        for (std::size_t i = 0; i < fn->params.size(); ++i) {
+            if (i != 0) declared += ", ";
+            declared += describeTypeAnnotation(fn->params[i].type);
+        }
+        declared += "): " + describeTypeAnnotation(fn->returnType);
+        const std::string required = describeMemoryContractSignature(*entry);
+
+        const std::size_t expectedParams = entry->paramType != nullptr ? 1u : 0u;
+        if (fn->params.size() != expectedParams) {
+            typeError("contract method '" + fn->name + "' in memory declaration '" + node->name +
+                          "' has the wrong signature: expected '" + required + "', declared '" + declared + "'",
+                      fn->line);
+        } else if (entry->paramType != nullptr &&
+                   !isBareTypeNamed(fn->params[0].type, entry->paramType)) {
+            typeError("contract method '" + fn->name + "' in memory declaration '" + node->name +
+                          "' must take a " + entry->paramType + " parameter, not '" +
+                          describeTypeAnnotation(fn->params[0].type) + "' - expected '" + required + "'",
+                      fn->line);
+        } else if (std::string_view(entry->returnType) == "void" && !isVoidReturn(fn->returnType)) {
+            typeError("contract method '" + fn->name + "' in memory declaration '" + node->name +
+                          "' must return void, not '" + describeTypeAnnotation(fn->returnType) +
+                          "' - expected '" + required + "'",
+                      fn->line);
+        } else if (std::string_view(entry->returnType) != "void" && !isOptionOfMemorySlot(fn->returnType)) {
+            typeError("contract method '" + fn->name + "' in memory declaration '" + node->name +
+                          "' must return Option<MemorySlot>, not '" +
+                          describeTypeAnnotation(fn->returnType) + "' - expected '" + required + "'",
+                      fn->line);
+        }
+
+        ClassMethodInfo m;
+        m.typeParams = fn->typeParams;
+        const auto savedMethodParams = currentClassTypeParams_;
+        mergeMethodTypeParams(fn->typeParams, fn->line);
+        std::string returnClassName;
+        m.returnType = resolveType(fn->returnType, &returnClassName);
+        m.returnClassName = returnClassName;
+        m.access = fn->access;
+        m.isDeprecated = hasAnnotation(fn->annotations, "Deprecated");
+        m.isStatic = false;
+        m.isAsync = fn->isAsync;
+        if (m.returnType == ZlType::FUNCTION) {
+            m.returnFunctionHasSignature = fn->returnType.functionHasSignature;
+            for (const auto& rp : fn->returnType.functionParamTypes) {
+                std::string cls;
+                m.returnFunctionParamTypes.push_back(resolveType(rp, &cls));
+                m.returnFunctionParamClassNames.push_back(std::move(cls));
+            }
+            if (fn->returnType.functionReturnType) {
+                m.returnFunctionReturnType = resolveType(*fn->returnType.functionReturnType,
+                                                         &m.returnFunctionReturnClassName);
+            }
+        }
+        for (const auto& p : fn->params) {
+            std::string cls;
+            const ZlType pt = resolveType(p.type, &cls);
+            m.paramTypes.push_back(pt);
+            m.paramClassNames.push_back(cls);
+            const bool isGeneric =
+                std::find(currentClassTypeParams_.begin(), currentClassTypeParams_.end(), cls) !=
+                    currentClassTypeParams_.end() ||
+                (pt == ZlType::UNION && containsTypeParameter(p.type, currentClassTypeParams_));
+            m.paramIsGeneric.push_back(isGeneric);
+        }
+        currentClassTypeParams_ = savedMethodParams;
+
+        info.methods[fn->name].push_back(std::move(m));
+    }
+
+    // The required half of the contract, reported at the declaration so the
+    // location names the `memory` line the reader wrote.
+    for (std::size_t i = 0; i < kMemoryContractSize; ++i) {
+        if (!kMemoryContract[i].required) continue;
+        if (declaredContract.count(kMemoryContract[i].name) != 0) continue;
+        typeError("memory declaration '" + node->name + "' does not declare the required contract method '" +
+                      kMemoryContract[i].name + "' - every domain must provide '" +
+                      describeMemoryContractSignature(kMemoryContract[i]) + "'",
+                  node->line);
+    }
+
+    semanticModel_.defineClass(std::move(info));
+}
+
+void TypeChecker::checkMemoryDeclaration(const MemoryDecl* node) {
+    // Mirrors checkClassDecl's member walk without the class-only parts
+    // (implements, type parameters, static fields - the parser rejects
+    // statics): set the owning-name context, then check each contract method
+    // and helper body like any method body. Nothing is emitted for these.
+    const std::string previousClassName = currentClassName_;
+    currentClassName_ = node->name;
+    for (const auto& member : node->members) {
+        if (member->kind == NodeKind::FunctionDecl) {
+            checkFunctionDecl(static_cast<const FunctionDecl*>(member.get()));
+        }
+    }
+    currentClassName_ = previousClassName;
+}
+
 void TypeChecker::registerInterfaceShape(const InterfaceDecl* node) {
     if (semanticModel_.hasClass(node->name)) {
         typeError("interface '" + node->name + "' conflicts with an existing type of the same name", node->line);
@@ -1996,6 +2285,20 @@ void TypeChecker::checkClassDecl(const ClassDecl* node) {
     classSuppressesDeprecation_ = previousClassSuppresses;
 }
 
+void TypeChecker::validateAnnotationTargets(const std::vector<Annotation>& annotations,
+                                            annotations::Position position, const std::string& declName) {
+    for (const auto& ann : annotations) {
+        // An unknown name never reaches here - the parser rejects it at the
+        // '@' itself (annotation_rules.hpp). Skip rather than double-report.
+        if (!annotations::isKnown(ann.name)) continue;
+        if (annotations::allowsOn(ann.name, annotations::acceptableTargets(position))) continue;
+        typeError(std::string("annotation '@") + ann.name + "' is not allowed on " +
+                      annotations::positionName(position) + " '" + declName + "' - allowed there: " +
+                      annotations::allowedNamesFor(position),
+                  ann.line);
+    }
+}
+
 void TypeChecker::checkOverrideAnnotation(const FunctionDecl* node) {
     const auto* classIt = semanticModel_.findClass(node->ownerClassName);
     if (classIt == nullptr) return; // shouldn't happen - registered in pass 0a/0b
@@ -2163,6 +2466,12 @@ void TypeChecker::checkFunctionDecl(const FunctionDecl* node) {
     bool previousFunctionIsAsync = currentFunctionIsAsync_;
     currentFunctionIsStatic_ = node->isStatic;
     currentFunctionIsAsync_ = node->isAsync;
+    // The annotation target check runs on every member func, constructor or
+    // not - a method-only annotation (@Override) on a constructor is exactly
+    // the misplaced-annotation case the registry exists for.
+    validateAnnotationTargets(node->annotations,
+                              node->isConstructor ? annotations::POS_CONSTRUCTOR : annotations::POS_METHOD,
+                              node->ownerClassName.empty() ? node->name : node->ownerClassName + "." + node->name);
     std::vector<std::string> previousTypeParams = currentClassTypeParams_;
     mergeMethodTypeParams(node->typeParams, node->line);
     currentReturnType_ = resolveType(node->returnType, &currentReturnClassName_);
@@ -5116,6 +5425,17 @@ TypeChecker::InferredType TypeChecker::inferNewExpr(const NewExpr* node) {
                    node->className + "." +
                    (classIt->enumMembers.empty() ? "MEMBER" : classIt->enumMembers.front()) + "'",
                    node->line);
+    }
+    if (classIt->isMemoryDomain) {
+        // Fail closed (the same convention as the native backend's
+        // EnterRegion/ExitRegion): no consumer for a domain exists yet, so
+        // no value of one can be created. The error names the phase that
+        // removes it, so the message goes stale exactly when it stops being
+        // true (docs/memory-domains.md §5.1).
+        typeError("memory declaration '" + node->className +
+                      "' cannot be constructed - nothing allocates into a domain yet; "
+                      "allocation with a domain lands with the arena phase (docs/memory-domains.md)",
+                  node->line);
     }
 
     // Generic instantiation, e.g. `new Box<int>(1)` - resolve the written

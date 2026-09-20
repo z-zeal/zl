@@ -23,9 +23,9 @@ Rules of upkeep:
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release           # once
 cmake --build build --config Release --target zl-tests   # core + every regression target
-(cd build && ctest -C Release)                           # 41 tests, includes both parity scripts
+(cd build && ctest -C Release)                           # 42 tests, includes both parity scripts
 examples/run_all.sh build/zl_language                    # 52 examples, byte-compared to their expected output
-bash scripts/run_regressions.sh build/zl_language all    # 72 fixtures under tests/zl (verified 2026-09-19)
+bash scripts/run_regressions.sh build/zl_language all    # 88 fixtures under tests/zl (verified 2026-09-19)
 bash scripts/native_gate.sh build/zl_language            # native tier gate
 ```
 

@@ -1,0 +1,23 @@
+// Regression fixture - invalid/memory_tests - MemoryExtendsRefused
+//
+// A memory declaration shares the type namespace but is not a
+// class-hierarchy member: extending one would give a class the domain's
+// contract as inherited method surface. Expected: a compile error at the
+// `extends`, exit 1.
+//
+// Valid counterpart: tests/zl/valid/memory_tests/MemoryContract/.
+
+memory Arena1 {
+    public func acquire(MemoryShape shape): Option<MemorySlot> {
+        return new None<MemorySlot>()
+    }
+
+    public func release(MemorySlot slot): void {
+    }
+}
+
+class MemoryExtendsRefused extends Arena1 {
+    func main(): void {
+        log("unreachable")
+    }
+}

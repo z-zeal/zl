@@ -1,10 +1,20 @@
 # Memory domains: user-defined automatic memory management
 
-Status: **design, not implemented.** This is the direction for letting ZL
-programmers write their own automatic memory strategies beside the collector.
-It replaces the draft "Custom Automatic Memory Management Plan"; the
+Status: **Phases 0–1 implemented; Phases 2–7 design.** This is the direction
+for letting ZL programmers write their own automatic memory strategies beside
+the collector. It replaces the draft "Custom Automatic Memory Management
+Plan"; the
 [corrections that came out of checking that draft against this tree](#what-changed-from-the-draft)
 are recorded at the bottom, each one against the code that made it necessary.
+
+What exists so far: the [Phase 0 baseline](#101-phase-0-baseline-measured-2026-09-19)
+(flat object fields, box recycling, the allocation benchmark and its numbers),
+and the [Phase 1 annotation rules + `memory` contract
+skeleton](#55-prerequisite-annotations-need-a-rule-before-they-carry-semantics)
+(landed 2026-09-19: unknown-annotation error, per-annotation targets, and a
+`memory` declaration whose contract the compiler validates with no consumer
+yet). Everything below that says "will" or "lands with Phase N" is still
+design.
 
 Related: [language-guide — memory-model direction](language-guide.md#memory-model-direction),
 [mir.md — ownership](mir.md), [mir-safety.md](mir-safety.md),
@@ -156,7 +166,14 @@ Consequences worth stating in the language guide later:
 
 `memory` opens a declaration exactly like `class`, with the contract above
 validated as a compile error when a required method is missing, mis-typed, or
-private. Both words parse **contextually**, and that is a decision rather than a detail.
+private. **This part is implemented (Phase 1, 2026-09-19):** the declaration
+parses contextually, `TypeChecker::registerMemoryDeclaration` validates the
+contract above against the exact signatures (acquire/release required;
+reset/exhausted/onCollect optional-but-then-exact; each public; fields and
+helpers private), and nothing emits the declaration - no layout, no dispatch,
+no reflection, and `new` of a domain is refused naming the phase that removes
+the refusal. One fixture per rule under `tests/zl/invalid/memory_tests/`; the
+valid counterpart is `tests/zl/valid/memory_tests/MemoryContract/`. Both words parse **contextually**, and that is a decision rather than a detail.
 The lexer has no context, which is why `shared`/`list`/`set`/`map` are keywords
 that the parser still accepts as names (`isNameToken`, `Parser::checkName`,
 `looksLikeTypedDeclStart` in `src/parser/parser.cpp`) and why
@@ -256,22 +273,34 @@ contest.
 
 ### 5.5 Prerequisite: annotations need a rule before they carry semantics
 
-The three consumers above are the pattern to extend, and three problems come
-first:
+**Landed 2026-09-19** - this section is the record of what exists, not a
+request. The three problems it set out to fix, and where each fix lives:
 
-- `parseAnnotations` accepts any identifier, so an unrecognised name is silently
-  ignored - `@memroy(Pool)` compiles today.
-- each consumer matches a name ad hoc, so a fourth one means a table rather than
-  another `if`.
-- annotations are already rejected on fields, so legal targets differ per
-  declaration kind and that difference is not written down anywhere.
+- `parseAnnotations` accepted any identifier, so an unrecognised name was
+  silently ignored - `@memroy(Pool)` compiled. Now the *name* is checked at
+  the `@` itself against the one table of known annotations
+  (`include/zl/parser/annotation_rules.hpp`), and an unknown name is a parse
+  error listing the known set
+  (`tests/zl/invalid/syntax_errors/UnknownAnnotation`).
+- Each consumer matched a name ad hoc. That table is now the registry: five
+  names, each with its allowed targets and a one-line note on what consumes
+  it (`Deprecated`, `SuppressWarnings`, `Override`, `ffi`, `native`). Adding
+  an annotation means adding a row, a consumer, and a fixture.
+- Legal targets differed per declaration kind and the difference was written
+  nowhere. Now the *target* is checked checker-side
+  (`TypeChecker::validateAnnotationTargets`), where the declaration kind is
+  fully known: a file-scope class takes only `TYPE_DECL` annotations; a
+  constructor takes only `FUNCTION` ones, so `@Override` on a constructor is
+  an error (`tests/zl/invalid/semantic_errors/AnnotationTargetConstructor`);
+  a method takes `FUNCTION` and `METHOD`. Fields take no annotations (the
+  parser's existing rejection).
 
-So before anything consumes an annotation for real: an allowlist of known names,
-a per-annotation target allowlist, and an "unknown annotation" error. Small and
-self-contained (parser plus a table in the checker plus two fixtures), and a
-hard dependency for §5.4. Until it lands, attach the type-level domain with a
-declaration modifier instead — `memory(ParticlePool) class Particle { ... }` —
-which the parser can validate positionally without any of the above.
+The Phase 1 exit criterion this satisfies: an unknown `@` name is an error.
+What this deliberately does *not* do is give any annotation a new meaning -
+`@memory(...)` attachment (§5.4) is Phase 2 and is deliberately absent from
+the table, because a name in the table with no consumer is exactly the
+silently-ignored case this section exists to prevent. Until attachment lands
+there is nothing to attach with, and no consumer to attach it to.
 
 ### 5.6 Words already in use
 
@@ -393,6 +422,11 @@ are written into `research/report.md`.
 
 Phase 6 is deliberately last. A programmer-written domain is only sound once
 Phases 3–4 have proved the agreement rule against the runtime's own domains.
+
+Progress: Phase 0 is measured and closed (§10.1, 2026-09-19). Phase 1 is
+landed (2026-09-19): the §5.5 annotation rules and the §5.1 contract
+skeleton - unknown-annotation error, per-annotation targets, `memory` parsing
+and contract validation, with no consumer. Phases 2–7 remain design.
 
 ## 10. Benchmarks (Phase 0's gate)
 
@@ -518,9 +552,18 @@ The draft's categories were right; here is where they live.
 
 - Parser: `tests/` lexer/parser suites — `memory` declaration, contextual
   `region`, `new T() in D`, malformed contract.
-- Type checker: `tests/zl/invalid/type_errors/` and `.../semantic_errors/`
+  (Phase 1, 2026-09-19: the `memory` declaration and malformed-contract
+  parser fixtures exist - `tests/zl/invalid/memory_tests/MemoryStaticMember`,
+  `MalformedMemoryDecl`; the source-level ownership fixtures are
+  `tests/zl/valid/ownership_tests/` and `tests/zl/invalid/ownership_tests/`.
+  `region` and `new T() in D` arrive with Phase 3.)
+- Type checker: `tests/zl/invalid/type_errors/`, `.../semantic_errors/` and
+  (for the domain contract) `.../memory_tests/`
   `.zl` fixtures, one per rule, each the minimum number of declarations needed
-  to fail that rule and nothing earlier. Baseline to fix alongside this: the
+  to fail that rule and nothing earlier. (Phase 1, 2026-09-19:
+  `memory_tests/` holds one fixture per contract rule; the annotation
+  registry's rejections live in `syntax_errors/UnknownAnnotation` and
+  `semantic_errors/AnnotationTarget{Class,Constructor}`.) Baseline to fix alongside this: the
   existing ownership surface has **no `.zl` fixture in any gate and no example**
   - `owned`/`borrow`/`move` are tested only at MIR level
   (`tests/mir_ownership_tests.cpp`), and the one `.zl` program that uses them,

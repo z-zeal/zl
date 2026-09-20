@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "zl/parser/ast.hpp"
+#include "zl/parser/annotation_rules.hpp"
 #include "zl/compiler/semantic_types.hpp"
 #include "zl/compiler/inferred_type.hpp"
 
@@ -164,6 +165,14 @@ private:
     // --- declarations ---
     void registerClassShape(const ClassDecl* node); // pass 0: fields + method/constructor signatures, before ANY body is checked
     void checkClassDecl(const ClassDecl* node);
+    // A `memory` declaration is registered like a class shape (fields +
+    // contract-method signatures, so bodies typecheck) but is validated
+    // against the domain contract first (docs/memory-domains.md §5.1): the
+    // required acquire/release, the optional reset/exhausted/onCollect, each
+    // public, each with its exact signature. Nothing consumes a domain yet,
+    // so the shape exists only for checking - no code is emitted for it.
+    void registerMemoryDeclaration(const MemoryDecl* node); // pass 0: contract validation + shape
+    void checkMemoryDeclaration(const MemoryDecl* node);    // body pass: contract method bodies, like checkClassDecl's member walk
     void checkFunctionDecl(const FunctionDecl* node);
     void registerDataShape(const DataDecl* node); // pass 0: fields only - a data type has no methods/constructors/body to check
     void registerEnumShape(const EnumDecl* node);  // pass 0: members only
@@ -197,6 +206,13 @@ private:
     //   - not found, @Override present -> error (nothing to override)
     //   - not found, @Override absent  -> fine, an ordinary new method
     void checkOverrideAnnotation(const FunctionDecl* node);
+    // The target half of the annotation registry (annotation_rules.hpp): the
+    // parser rejects an unknown @name at the '@' itself; here - where the
+    // declaration kind is fully known - a *known* name annotating a position
+    // it does not target is an error ('@Override' on a class or constructor,
+    // '@ffi' on a class). Unknown names are skipped, not re-reported.
+    static void validateAnnotationTargets(const std::vector<Annotation>& annotations,
+                                          annotations::Position position, const std::string& declName);
     [[nodiscard]] static bool hasAnnotation(const std::vector<Annotation>& annotations, const std::string& name);
     [[nodiscard]] static const Annotation* findAnnotation(const std::vector<Annotation>& annotations, const std::string& name);
     // Non-throwing diagnostic: prints "warning: ..." to stderr and returns,

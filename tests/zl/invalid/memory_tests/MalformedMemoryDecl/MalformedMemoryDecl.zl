@@ -1,0 +1,14 @@
+// Regression fixture - invalid/memory_tests - MalformedMemoryDecl
+//
+// `memory` opens a declaration like `class`: name, then a body. A name with
+// no body is a parse error with a location, not a silently-ignored token.
+// Expected: a syntax error expecting '{' after the name, exit 1.
+//
+// Valid counterpart: tests/zl/valid/memory_tests/MemoryContract/.
+
+memory NoBrace
+class MalformedMemoryDecl {
+    func main(): void {
+        log("unreachable")
+    }
+}

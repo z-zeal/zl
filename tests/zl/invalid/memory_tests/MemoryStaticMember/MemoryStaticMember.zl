@@ -1,0 +1,22 @@
+// Regression fixture - invalid/memory_tests - MemoryStaticMember
+//
+// A domain's state and contract belong to the domain object; there is no
+// static surface to call through. Expected: a parse error at the member
+// naming the 'static' form, exit 1.
+//
+// Valid counterpart: tests/zl/valid/memory_tests/MemoryContract/.
+
+memory Static1 {
+    public static func acquire(MemoryShape shape): Option<MemorySlot> {
+        return new None<MemorySlot>()
+    }
+
+    public func release(MemorySlot slot): void {
+    }
+}
+
+class MemoryStaticMember {
+    func main(): void {
+        log("unreachable")
+    }
+}

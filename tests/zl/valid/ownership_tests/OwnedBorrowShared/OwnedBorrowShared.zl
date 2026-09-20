@@ -13,20 +13,12 @@
 //   shared  the thread-synchronised cell (Shared<T>), set and read back
 //
 // The invalid half lives in tests/zl/invalid/ownership_tests/ (UseAfterMove,
-// MoveWhileBorrowed), one fixture per dataflow diagnostic.
+// MoveWhileBorrowed), one fixture per dataflow diagnostic. The Ticket type is
+// this case's helper module (Ticket.zl, sibling of the entry): one primary
+// type per file, imported by name.
 // ============================================================================
 
-class Ticket {
-    private string label
-
-    func Ticket(string label): void {
-        this.label = label
-    }
-
-    public func label(): string {
-        return this.label
-    }
-}
+import Ticket
 
 class OwnedBorrowShared {
     static func read(borrow Ticket t): string {

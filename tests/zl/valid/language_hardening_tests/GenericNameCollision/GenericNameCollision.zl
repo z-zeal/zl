@@ -9,16 +9,12 @@
 // error pointing at an unrelated user line. Signatures are now resolved in
 // their owning class's context, so the type parameter wins inside Result
 // and the user's E<E<int>> instantiates normally.
+//
+// The colliding class lives in this case's helper module (E.zl, sibling of
+// the entry): one primary type per file, imported by name.
 // ============================================================================
 
-class E<T> {
-    public func wrap(T value): E<T> {
-        var out = new E<T>()
-        out.held = value
-        return out
-    }
-    public T held
-}
+import E
 
 class GenericNameCollision {
     func main(): void {

@@ -1,0 +1,15 @@
+// Helper module for the OwnedBorrowShared fixture - declares no entry point,
+// so the regression runner treats this directory's OwnedBorrowShared.zl as
+// the case. One primary type per file: the entry imports this module by name.
+
+class Ticket {
+    private string label
+
+    func Ticket(string label): void {
+        this.label = label
+    }
+
+    public func label(): string {
+        return this.label
+    }
+}

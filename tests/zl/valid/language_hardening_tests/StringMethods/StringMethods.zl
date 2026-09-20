@@ -12,36 +12,16 @@
 // are the scalar-indexed ones that Text.* wraps with parsing conveniences.
 // `split` returns the native list storage for the same reason String.split
 // does, so it is read back through Collection.*.
+//
+// The receiver helpers live in this case's directory, one primary type per
+// file: StringMethodBox.zl (a string field as receiver) and StringMethodTag.zl
+// (a generic instantiation's body). The entry imports both by name.
 // ============================================================================
 
 import zl.text.Text
 
-// A helper declaration sharing the file with the primary type. It exists so the
-// fixture covers a string *field* as the receiver: a field load is a different
-// lowering path from a local, and the surface may not depend on where the
-// string lives.
-class StringMethodBox {
-    public string text
-
-    func StringMethodBox(string initial): void {
-        this.text = initial
-    }
-}
-
-// A generic class whose method calls methods on a concrete `string` field: the
-// body is checked per instantiation, and every instantiation must resolve the
-// surface the same way (no instantiation may leave a stale resolution behind).
-class StringMethodTag<T> {
-    public string name
-
-    func StringMethodTag(string initial): void {
-        this.name = initial
-    }
-
-    public func label(): string {
-        return this.name.trim().upper() + "/" + this.name.length()
-    }
-}
+import StringMethodBox
+import StringMethodTag
 
 class StringMethods {
     func check(bool cond, string what): void {

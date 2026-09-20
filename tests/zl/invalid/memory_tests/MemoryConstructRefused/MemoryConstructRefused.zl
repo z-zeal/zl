@@ -1,0 +1,25 @@
+// Regression fixture - invalid/memory_tests - MemoryConstructRefused
+//
+// Phase 1 has no consumer for a domain, so no value of one can exist: `new`
+// of a memory declaration fails closed with a message naming the phase that
+// removes the refusal - the same convention as the native backend's
+// unimplemented region opcodes. Expected: a compile error at the `new`,
+// exit 1.
+//
+// Valid counterpart: tests/zl/valid/memory_tests/MemoryContract/.
+
+memory Arena1 {
+    public func acquire(MemoryShape shape): Option<MemorySlot> {
+        return new None<MemorySlot>()
+    }
+
+    public func release(MemorySlot slot): void {
+    }
+}
+
+class MemoryConstructRefused {
+    func main(): void {
+        var a = new Arena1()
+        log(a)
+    }
+}

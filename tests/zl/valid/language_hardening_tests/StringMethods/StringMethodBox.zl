@@ -1,0 +1,15 @@
+// Helper module for the StringMethods fixture - declares no entry point, so
+// the regression runner treats this directory's StringMethods.zl as the case.
+// One primary type per file: the entry imports this module by name.
+//
+// It exists so the fixture covers a string *field* as the receiver: a field
+// load is a different lowering path from a local, and the surface may not
+// depend on where the string lives.
+
+class StringMethodBox {
+    public string text
+
+    func StringMethodBox(string initial): void {
+        this.text = initial
+    }
+}

@@ -1,0 +1,25 @@
+// Regression fixture - invalid/memory_tests - MemoryConstructor
+//
+// A domain is never instantiated by user code - the registry owns the domain
+// object - so a constructor-shaped func (name matching the declaration) has
+// nothing to construct. Expected: a compile error at the method, exit 1.
+//
+// Valid counterpart: tests/zl/valid/memory_tests/MemoryContract/.
+
+memory WithCtor {
+    public func acquire(MemoryShape shape): Option<MemorySlot> {
+        return new None<MemorySlot>()
+    }
+
+    public func release(MemorySlot slot): void {
+    }
+
+    public func WithCtor(): void {
+    }
+}
+
+class MemoryConstructor {
+    func main(): void {
+        log("unreachable")
+    }
+}

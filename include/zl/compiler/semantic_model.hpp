@@ -68,6 +68,10 @@ struct ClassShapeInfo {
     std::unordered_set<std::string> visibleImports;
     bool isDataType{false};
     bool isEnumType{false};
+    // True for a `memory` declaration's shape: it exists so contract method
+    // bodies typecheck, but nothing emits it - no layout, no dispatch, no
+    // reflection, and `new` of it is refused (inferNewExpr).
+    bool isMemoryDomain{false};
     std::vector<std::string> enumMembers;
 };
 

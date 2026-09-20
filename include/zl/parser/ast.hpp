@@ -56,6 +56,7 @@ enum class NodeKind {
     DataLiteralExpr,
     DataUpdateExpr,
     EnumDecl,
+    MemoryDecl,
     LambdaExpr,
     MatchExpr,
 };
@@ -199,6 +200,28 @@ struct DataDecl : AstNode {
     std::vector<Param> fields;
     std::vector<NodePtr> members; // FunctionDecl only: immutable record methods
     DataDecl() : AstNode(NodeKind::DataDecl) {}
+};
+
+// memory Name { ... } - a user-written memory-domain declaration
+// (docs/memory-domains.md §5.1). `memory` is a contextual keyword: it opens a
+// declaration only at file scope when followed by a name, so existing
+// programs using `memory` as an identifier keep parsing.
+//
+// The body holds the domain's contract methods (acquire/release, plus the
+// optional reset/exhausted/onCollect), private helpers, and its state as
+// fields - the same member forms a class body takes, minus statics,
+// constructors, operators and nested declarations. The type checker
+// validates the contract (TypeChecker::registerMemoryDeclaration); nothing
+// consumes a domain yet, so no declaration here is emitted into bytecode.
+struct MemoryDecl : AstNode {
+    // Dotted import names visible in the file this declaration was written
+    // in - stamped by ModuleLoader like ClassDecl::visibleImports, for the
+    // same reason: file boundaries are lost once every file's declarations
+    // land in one flat Program.
+    std::unordered_set<std::string> visibleImports;
+    std::string name;
+    std::vector<NodePtr> members; // FunctionDecl (contract methods, helpers) or VarDecl (state)
+    MemoryDecl() : AstNode(NodeKind::MemoryDecl) {}
 };
 
 // TypeName { field: expr, field: expr, ... } - constructs a value of a

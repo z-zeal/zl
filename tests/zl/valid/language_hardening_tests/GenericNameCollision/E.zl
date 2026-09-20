@@ -1,0 +1,18 @@
+// Helper module for the GenericNameCollision fixture - declares no entry
+// point, so the regression runner treats this directory's
+// GenericNameCollision.zl as the case. One primary type per file: the entry
+// imports this module by name.
+//
+// The name `E` is what makes this module load-bearing: the builtin
+// Result<T, E> declares a TYPE PARAMETER with the same name, and the checker's
+// member-signature fixup pass used to resolve signatures at global scope, so
+// builtin `unwrapErr(): E` was misread as this class.
+
+class E<T> {
+    public func wrap(T value): E<T> {
+        var out = new E<T>()
+        out.held = value
+        return out
+    }
+    public T held
+}

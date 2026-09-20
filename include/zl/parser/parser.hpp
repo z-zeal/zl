@@ -60,12 +60,13 @@ private:
 
     // --- top-level declarations ---
     NodePtr parseImportDecl();    // import a.b.C - must appear before any class/data decl
-    NodePtr parseDeclaration();   // dispatches to class/interface/data/enum and async func declarations
+    NodePtr parseDeclaration();   // dispatches to class/interface/data/enum/memory declarations
     NodePtr parseClassDecl();     // class Name (extends P)? (implements I, ...)? { member member ... }
     NodePtr parseClassDecl(std::vector<Annotation> annotations); // same, with leading @annotations already parsed
     NodePtr parseInterfaceDecl(); // interface Name (extends I, ...)? { methodSig methodSig ... }
     NodePtr parseDataDecl();      // data Name { field field ... }
     NodePtr parseEnumDecl();      // enum Name { MEMBER MEMBER ... }
+    NodePtr parseMemoryDecl();    // memory Name { contract methods, helpers, fields }
     AccessModifier parseAccessModifier();
     NodePtr parseClassMember();   // a FunctionDecl or a field VarDecl, inside a class body
     NodePtr parseFunctionDecl(AccessModifier access = AccessModifier::DEFAULT,

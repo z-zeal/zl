@@ -25,6 +25,9 @@ void stampSourceFile(AstNode* root, const std::string& sourceFile) {
             case NodeKind::DataDecl:
                 for (const auto& n : static_cast<const DataDecl*>(node)->members) stampSource(n.get());
                 break;
+            case NodeKind::MemoryDecl:
+                for (const auto& n : static_cast<const MemoryDecl*>(node)->members) stampSource(n.get());
+                break;
             case NodeKind::FunctionDecl:
                 stampSource(static_cast<const FunctionDecl*>(node)->body.get());
                 break;
@@ -101,8 +104,9 @@ std::unique_ptr<Program> ModuleLoader::parseFile(const std::filesystem::path& fi
 
 
     // A loaded module may be backed by any named top-level type: class, data,
-    // interface, or enum. The primary-name contract applies to that declared
-    // type and helper declarations may coexist in the same file.
+    // interface, enum, or memory declaration. The primary-name contract
+    // applies to that declared type and helper declarations may coexist in
+    // the same file.
     bool foundPrimaryType = false;
     for (const auto& decl : program->declarations) {
         switch (decl->kind) {
@@ -114,6 +118,9 @@ std::unique_ptr<Program> ModuleLoader::parseFile(const std::filesystem::path& fi
                 break;
             case NodeKind::InterfaceDecl:
                 foundPrimaryType = static_cast<const InterfaceDecl*>(decl.get())->name == expectedClassName;
+                break;
+            case NodeKind::MemoryDecl:
+                foundPrimaryType = static_cast<const MemoryDecl*>(decl.get())->name == expectedClassName;
                 break;
             default:
                 break;

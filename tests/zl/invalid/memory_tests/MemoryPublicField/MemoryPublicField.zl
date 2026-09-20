@@ -1,0 +1,26 @@
+// Regression fixture - invalid/memory_tests - MemoryPublicField
+//
+// A domain's fields are its own state (counters, capacity), not part of the
+// contract - nothing outside the domain may touch them, so a public field is
+// rejected the same way a public helper is. Expected: a compile error at the
+// field telling the writer to make it private, exit 1.
+//
+// Valid counterpart: tests/zl/valid/memory_tests/MemoryContract/ (whose
+// counter field is private).
+
+memory PubState {
+    public int capacity = 0
+
+    public func acquire(MemoryShape shape): Option<MemorySlot> {
+        return new None<MemorySlot>()
+    }
+
+    public func release(MemorySlot slot): void {
+    }
+}
+
+class MemoryPublicField {
+    func main(): void {
+        log("unreachable")
+    }
+}

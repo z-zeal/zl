@@ -10,20 +10,12 @@
 // silently dropping work). Now the backend stubs incomplete functions: the
 // refusal names the function and reason at compile time, and reaching the
 // stub raises at runtime before any of the body runs.
+//
+// The truncated function lives in this case's helper module (Box.zl, sibling
+// of the entry): one primary type per file, imported by name.
 // ============================================================================
 
-class Box<T> {
-    public int calls
-
-    public func bump(T v): void {
-        this.calls = this.calls + 1
-        // Generic arithmetic has no MIR spelling: lowering stops here and
-        // marks this function incomplete.
-        var x = v + v
-        this.calls = this.calls + 10
-        log("unreachable " + x)
-    }
-}
+import Box
 
 class IncompleteStubRefusal {
     func main(): void {

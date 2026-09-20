@@ -26,7 +26,7 @@ Point.zl         -> data Point
 Shape.zl         -> interface Shape
 ```
 
-A `class`, `data`, `interface`, or `enum` declaration satisfies the rule, and other
+A `class`, `data`, `interface`, `enum`, or `memory` declaration satisfies the rule, and other
 declarations may share the file with the primary type - they simply are not importable
 by their own name, since an import resolves to a path. The reason for the rule, and
 what it costs, is written up in
@@ -550,6 +550,54 @@ with concrete compile-time checking. Numeric mixed-type overloads, operator visi
 inheritance, and interface operator contracts are supported. Unsupported or ambiguous
 object operators are compile-time errors.
 
+## Annotations
+
+The compiler knows five annotation names, and each one targets a declaration kind:
+
+| Annotation | Allowed on | Meaning |
+| --- | --- | --- |
+| `@Deprecated` | classes, funcs (constructors included) | uses warn on stderr unless suppressed |
+| `@SuppressWarnings(deprecation)` | classes, funcs | silence the deprecation warnings underneath |
+| `@Override` | methods (not constructors) | checked against the parent class / implemented interfaces: a mismatch is an error, an unannotated override is a warning |
+| `@ffi(library, symbol)` / `@ffi(symbol)` | funcs | the body is a foreign-symbol binding, not ZL |
+| `@native` | funcs | the body is looked up in the native catalog instead of compiled |
+
+Anything else is an error, not a silent no-op: an unknown name is a parse error at the
+`@` itself, and a known name on a target it does not annotate (say `@Override` on a
+class or a constructor) is a compile error naming the annotations that are allowed
+there. The registry is
+`include/zl/parser/annotation_rules.hpp` — names are checked in the parser, targets in
+the type checker — and a new annotation means a row there, a consumer, and a fixture.
+Annotations on fields are rejected.
+
+## Memory declarations (`memory`)
+
+A `memory` declaration writes a storage-domain *policy* — a contract the compiler, not
+user code, calls:
+
+```zl
+memory FrameArena {
+    private int resets = 0
+
+    public func acquire(MemoryShape shape): Option<MemorySlot>   // required
+    public func release(MemorySlot slot): void                   // required
+    public func reset(): void                                    // optional
+    public func exhausted(MemoryShape shape): void               // optional
+    public func onCollect(MemoryStats stats): void               // optional
+}
+```
+
+The two required methods and the three optional ones are validated exactly — present,
+public, with those signatures — at compile time; the optional ones may be absent, but a
+mis-spelled one is an error, not a default. State (fields) and helpers must be private:
+the public surface of a domain is exactly its contract. A domain cannot be constructed
+(`new FrameArena()` refuses until allocation with a domain lands), cannot be extended,
+and declares no constructor or static member. Nothing consumes a declaration yet, so
+none of it reaches the bytecode — the contract is checked now so the runtime that
+honours it later arrives against fixtures, not against hope. The plan it belongs to,
+and what each later phase adds, is
+[memory-domains.md](memory-domains.md).
+
 ## Record values (`data`)
 
 A `data` declaration defines a named record with typed public fields:
@@ -776,9 +824,11 @@ a parameter (`func consume(owned Token t)`), on reference-like types only. `move
 an `owned` binding; the contract is checked in the type checker and again over the MIR
 control-flow graph. What an `owned` binding gives up at `Drop` is its ability to *keep a
 box alive* — the frame forgets it — and not its memory, which the collector returns on its
-own schedule. The direction for closing that gap, including user-written automatic memory
-strategies, is [memory-domains.md](memory-domains.md); the checked contract itself is
-specified in [mir.md](mir.md#ownership).
+own schedule. The first surface of the plan that closes that gap also exists now: a
+[`memory` declaration](#memory-declarations-memory) whose contract the compiler
+validates (and nothing consumes yet). The direction itself, phase by phase with
+measured baselines, is [memory-domains.md](memory-domains.md); the checked contract
+itself is specified in [mir.md](mir.md#ownership).
 
 Thread confinement is enforced at compile time: a closure passed to `Thread.start` or
 `Task.spawn` may only capture values that are safe to carry across the boundary. The

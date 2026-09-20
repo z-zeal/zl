@@ -1,0 +1,19 @@
+// Regression fixture - invalid/semantic_errors - AnnotationTargetConstructor
+//
+// @Override is a method-only annotation, and a constructor is not a method:
+// there is no parent constructor to override, so the annotation could only
+// ever be dead weight. The checker rejects it by position. Expected: a
+// compile error at the annotation's line naming the constructor, exit 1.
+//
+// Contrast: @Deprecated and @SuppressWarnings are FUNCTION-targeted and stay
+// legal on a constructor.
+
+class AnnotationTargetConstructor {
+    @Override
+    func AnnotationTargetConstructor(): void {
+    }
+
+    func main(): void {
+        log("unreachable")
+    }
+}

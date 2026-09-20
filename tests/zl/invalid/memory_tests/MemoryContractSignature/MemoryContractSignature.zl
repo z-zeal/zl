@@ -1,0 +1,23 @@
+// Regression fixture - invalid/memory_tests - MemoryContractSignature
+//
+// A contract method that is present but mis-typed is a compile error, not an
+// overload: 'release' takes exactly one MemorySlot and returns void, so a
+// domain whose release takes int is not a domain the compiler can call.
+// Expected: a compile error at the method quoting both spellings, exit 1.
+//
+// Valid counterpart: tests/zl/valid/memory_tests/MemoryContract/.
+
+memory BadRelease {
+    public func acquire(MemoryShape shape): Option<MemorySlot> {
+        return new None<MemorySlot>()
+    }
+
+    public func release(int slot): void {
+    }
+}
+
+class MemoryContractSignature {
+    func main(): void {
+        log("unreachable")
+    }
+}
