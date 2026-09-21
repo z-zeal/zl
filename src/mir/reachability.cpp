@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "zl/compiler/native_catalog.hpp"
+#include "zl/mir/backend_edges.hpp"
 
 namespace zl::mir {
 
@@ -30,6 +31,27 @@ namespace {
 // `reachableFunctions` call over the module it answers for, and the
 // per-(receiver, method) dispatch results are cached inside it for the same run
 // only.
+// The name a dispatch site speaks: the bare method token, without the
+// parameter list and without class qualification. The backend resolves a
+// virtual site by exactly this token (`methodToken(fn.simpleName)` in
+// vm_backend.cpp), so the analysis must match callees the same way - if the
+// two spellings diverge, the analysis keeps a different function than the one
+// the call site can actually run, and that is a hole in the removal argument
+// rather than a missed optimisation.
+[[nodiscard]] std::string nameToken(const std::string& text) {
+    const std::size_t paren = text.find('(');
+    const std::size_t dot = text.rfind('.', paren == std::string::npos ? text.size() : paren);
+    const std::size_t start = dot == std::string::npos ? 0 : dot + 1;
+    return paren == std::string::npos ? text.substr(start) : text.substr(start, paren - start);
+}
+
+// The dispatch token of a function: its `simpleName` ("get()") when lowering
+// filled it, otherwise the qualified name with its parameter list stripped
+// ("Shared.get(int)" -> "get"). Both spellings land on the bare token.
+[[nodiscard]] std::string nameTokenOf(const Function& function) {
+    return nameToken(function.simpleName.empty() ? function.name : function.simpleName);
+}
+
 class Hierarchy {
 public:
     explicit Hierarchy(const Module& module) : module_(module) {
@@ -134,7 +156,7 @@ public:
             if (methods == methodsByClass_.end()) return;
             for (const FunctionId method : methods->second) {
                 const Function* callee = module_.function(method);
-                if (callee == nullptr || callee->declaredName() != methodName) continue;
+                if (callee == nullptr || nameTokenOf(*callee) != nameToken(methodName)) continue;
                 candidates.push_back(method);
             }
         };
@@ -262,10 +284,12 @@ ReachabilityReport reachableFunctions(const Module& module) {
     // functions, and this analysis runs on modules with hundreds of them.
     std::unordered_map<std::string, std::vector<FunctionId>> functionsByName;
     for (const auto& function : module.functions) {
-        // Keyed by the declared name: a dispatch site names "speak", not
-        // "speak()". Overloads of one name share a key on purpose - keeping all
-        // of them is the over-approximation this analysis promises.
-        functionsByName[function.declaredName()].push_back(function.id);
+        // A name-based fallback lookup must answer whichever spelling a call
+        // site carries: the bare method token ("speak") or the declared name
+        // with its class qualification ("Cat.speak"). Overloads of one name
+        // share a key on purpose - keeping all of them is the
+        // over-approximation this analysis promises.
+        functionsByName[nameTokenOf(function)].push_back(function.id);
     }
 
     std::size_t dispatchKept = 0;
@@ -293,12 +317,15 @@ ReachabilityReport reachableFunctions(const Module& module) {
     };
     // The sound fallback when a dispatch site names a class or method this
     // module does not have: keep every function with that method name. An empty
-    // answer here would be an absence of evidence read as evidence of absence.
+    // answer here would be an absence of evidence read as evidence of absence,
+    // so it is reported upward as an open edge rather than treated as a
+    // resolved call to nothing.
     const auto enqueueByName = [&](const std::string& methodName) {
-        const auto candidates = functionsByName.find(methodName);
-        if (candidates == functionsByName.end()) return;
+        const auto candidates = functionsByName.find(nameToken(methodName));
+        if (candidates == functionsByName.end()) return std::size_t(0);
         dispatchKept += candidates->second.size();
         for (const FunctionId candidate : candidates->second) enqueue(candidate);
+        return candidates->second.size();
     };
     // An execution edge the analysis cannot pin to a body. The edge is
     // recorded, not dropped: the report becomes incomplete, and a caller that
@@ -330,6 +357,33 @@ ReachabilityReport reachableFunctions(const Module& module) {
         noteUnresolvedEdge(function, construct);
     };
 
+    // Resolve one dispatch site the way the backend will resolve it: over the
+    // receiver's class hierarchy, falling back to "every function with that
+    // method name", and - if neither answers - recording an open edge. A
+    // dispatch site that resolves to nothing is never treated as "resolved to
+    // no targets": either the backend finds a method and can run it, or it
+    // refuses the function that reached it, and a removal analysis that called
+    // that site closed would delete the callee the refusal needs.
+    const auto keepDispatchEdge = [&](const Function& where, const std::string& className,
+                                      const std::string& methodName) {
+        if (methodName.empty()) {
+            noteUnresolvedEdge(where, "dispatches a method with no name");
+            return;
+        }
+        std::size_t keptHere = 0;
+        if (!className.empty()) {
+            const auto& candidates = hierarchy.dispatchCandidates(className, methodName);
+            if (!candidates.empty()) {
+                dispatchKept += candidates.size();
+                for (const FunctionId candidate : candidates) enqueue(candidate);
+                keptHere = candidates.size();
+            }
+        }
+        if (keptHere == 0) keptHere = enqueueByName(methodName);
+        if (keptHere == 0)
+            noteUnresolvedEdge(where, "dispatches a method no function in this module can serve");
+    };
+
     enqueue(module.entryPoint);
 
     while (!work.empty()) {
@@ -346,8 +400,7 @@ ReachabilityReport reachableFunctions(const Module& module) {
 
         for (const auto& block : function->blocks) {
             for (const auto& instruction : block.instructions) {
-                switch (instruction.opcode) {
-                    // Closed edges: the target is recorded on the instruction.
+                switch (instruction.opcode) {                    // Closed edges: the target is recorded on the instruction.
                     case Opcode::Call:
                     case Opcode::InvokeSuper:
                     case Opcode::InvokeStatic:
@@ -356,22 +409,10 @@ ReachabilityReport reachableFunctions(const Module& module) {
                         break;
                     // Virtual/interface dispatch: closed by over-approximation
                     // over the recorded hierarchy.
-                    case Opcode::InvokeMethod: {
-                        const std::string& className = instruction.target.className;
-                        const std::string& methodName = instruction.target.methodName;
-                        if (className.empty() || methodName.empty()) {
-                            enqueueByName(methodName);
-                            break;
-                        }
-                        const auto& candidates = hierarchy.dispatchCandidates(className, methodName);
-                        if (candidates.empty()) {
-                            enqueueByName(methodName);
-                        } else {
-                            dispatchKept += candidates.size();
-                            for (const FunctionId candidate : candidates) enqueue(candidate);
-                        }
+                    case Opcode::InvokeMethod:
+                        keepDispatchEdge(*function, instruction.target.className,
+                                         instruction.target.methodName);
                         break;
-                    }
                     // Indirect/unresolved call: the callee is a value, not a
                     // recorded target. Proven to a single closure body -> the
                     // edge is closed and the body is enqueued; anything else
@@ -410,23 +451,69 @@ ReachabilityReport reachableFunctions(const Module& module) {
                                      "runs a function value through RwLock.withWrite that is not pinned to a single "
                                      "closure body");
                         break;
-                    case Opcode::SharedWithLock:
-                        executeValue(*function, proof, instruction, 1,
-                                     "runs a function value through Shared.withLock that is not pinned to a single "
-                                     "closure body");
+                    // Shared-cell access: the backend lowers each of these to
+                    // a dispatch of the matching `Shared` method (and
+                    // `withLock` additionally *runs* its callback operand).
+                    // `sharedMethodFor` is the one list, shared with the
+                    // emitter, so the analysis keeps exactly what the
+                    // translation dispatches to.
+                    case Opcode::SharedGet:
+                    case Opcode::SharedSet:
+                    case Opcode::SharedWithLock: {
+                        if (const char* method = sharedMethodFor(instruction.opcode))
+                            keepDispatchEdge(*function, "Shared", method);
+                        if (instruction.opcode == Opcode::SharedWithLock)
+                            executeValue(*function, proof, instruction, 1,
+                                         "runs a function value through Shared.withLock that is not pinned to a "
+                                         "single closure body");
                         break;
+                    }
+                    // Collection literals grow through the collection class's
+                    // own methods - see `collectionAppendMethod`: an
+                    // `index_store` on a class-layer List/Set/Map is compiled
+                    // by the backend into a `push`/`add`/`put` dispatch, so
+                    // those methods are live from this function even though no
+                    // call instruction names them.
+                    case Opcode::IndexStore: {
+                        if (instruction.operands.empty()) break;
+                        const std::string base =
+                            classCollectionBase(module.types, instruction.operands[0].type);
+                        if (base.empty()) break;
+                        keepDispatchEdge(*function, base, collectionAppendMethod(base));
+                        break;
+                    }
+                    // And the literal's construction dispatches to the
+                    // collection class's empty constructor, found by the same
+                    // predicate the emitter scans with.
+                    case Opcode::NewCollection: {
+                        const std::string base = classCollectionBase(module.types, instruction.resultType);
+                        if (base.empty()) break;
+                        std::size_t keptHere = 0;
+                        for (const auto& candidate : module.functions) {
+                            if (isCollectionConstructor(candidate, base)) {
+                                enqueue(candidate.id);
+                                ++keptHere;
+                            }
+                        }
+                        if (keptHere == 0)
+                            noteUnresolvedEdge(*function,
+                                              "builds a literal of a collection class with no empty constructor");
+                        break;
+                    }
                     // Native opaque entries: execution leaves this module's
                     // functions by design (a known symbol), so they cannot
-                    // enter a function this analysis forgot - except natives
-                    // that enter code by name, which open the graph.
+                    // enter a function this analysis forgot - except the
+                    // reflection family, which both enters code by name and
+                    // reads the function table as data, and either makes the
+                    // table load bearing.
                     case Opcode::CallNative:
                         if (instruction.target.nativeId >= 0 &&
-                            ::zl::nativeEntersCodeByName(
+                            ::zl::nativeIsReflective(
                                 static_cast<::zl::NativeId>(instruction.target.nativeId))) {
                             if (!report.dynamicEntry) {
                                 report.dynamicEntry = true;
                                 report.dynamicEntryReason =
-                                    instruction.target.nativeName + " enters code by name";
+                                    instruction.target.nativeName + " reads or enters code by name";
                             }
                         }
                         break;

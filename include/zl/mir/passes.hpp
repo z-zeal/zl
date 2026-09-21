@@ -11,10 +11,12 @@
 // The framework is deliberately boring, because the interesting property is
 // not what it can do but what it will not do. Four rules define it:
 //
-//   1. **Every pass is a function-to-function transform that reports whether
-//      it changed anything.** Nothing rewrites MIR silently, and the pipeline
-//      uses the answer both to decide whether another iteration is worth
-//      running and to decide whether to re-verify.
+//   1. **Every pass reports whether it changed anything.** Most passes are
+//      function-to-function transforms, and one (see `ModulePass`) deliberately
+//      is not; what every pass shares is that it answers the question. Nothing
+//      rewrites MIR silently, and the pipeline uses the answer both to decide
+//      whether another iteration is worth running and to decide whether to
+//      re-verify.
 //
 //   2. **The verifier runs between passes.** Any pass that reports a change is
 //      followed by `verifyFunction`. A pass that produces invalid MIR is a
@@ -155,10 +157,16 @@ public:
 
 // Runs once over the whole module. Reserved for transforms whose correctness
 // argument needs every function at once (inter-procedural analysis, whole
-// module dead-function elimination, call-graph rewrites). None ship today -
-// removing a function is not something this framework will do while
-// reflection can still reach it by name - but the pipeline supports the kind
-// so adding one later does not mean restructuring the manager.
+// module dead-function elimination, call-graph rewrites). One ships today:
+// `eliminate-dead-functions`, which removes functions only when the
+// reachability report proves the call graph closed - reflection considered,
+// every function value pinned - so that "nobody calls this" really means
+// "this cannot run" (see `reachability.hpp` for that argument, and the pass's
+// file header for the keep set). A module pass gets no per-pass verification -
+// there is no per-module slot in that loop - so its rewrite is built to refuse
+// anything it cannot fully explain, and the final whole-module verification is
+// the backstop that fails the pipeline rather than hand a broken module to a
+// backend.
 class ModulePass : public Pass {
 public:
     [[nodiscard]] bool isModulePass() const noexcept final { return true; }
@@ -265,6 +273,17 @@ std::unique_ptr<FunctionPass> createDeadBlockEliminationPass();
 // deletion (see `isRemovableIfResultUnused`), plus stores to a slot no path
 // reads. Iterates, because removing one instruction can orphan another.
 std::unique_ptr<FunctionPass> createDeadValueEliminationPass();
+
+// The one module pass: deletes functions the reachability report proves
+// unreachable. The licence to delete is `ReachabilityReport::complete()` - an
+// entry point exists, no reachable reflection invoke, no unpinned
+// function-value call - so a program that can reach code by name or by value
+// keeps every function, and the refusal is recorded in the pass's note rather
+// than performed silently. Keeps every static initializer regardless, since
+// reflection can trigger it. Renumbers the survivors and rewrites every
+// function id the removal invalidates; a rewrite it cannot explain commits
+// nothing.
+std::unique_ptr<Pass> createEliminateDeadFunctionsPass();
 
 // ---------------------------------------------------------------------------
 // Pass registry

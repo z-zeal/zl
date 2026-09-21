@@ -1,0 +1,111 @@
+// ============================================================================
+// Regression fixture - valid/native - NativeExecBench
+//
+// P1-6 end-to-end pair, for both calling shapes the execution driver speaks.
+// The `sumSquares` kernel is `@native` and runs on emitted machine code
+// through `zl --run-native <this file> --call sumSquares --int64 100
+// --iters 10000`; the `poly` kernel does the same as an all-double signature
+// (`--call poly --double 0.7 --iters 10000`). The `*Vm` twins are the same
+// bodies without the annotation, and `main` runs the same loops over them on
+// the interpreter, printing the same line shape.
+// `tests/native_exec_parity.py` (ctest `native-exec-parity`) runs all four and
+// requires identical results and totals - for the double pair, identical
+// *bits*, which is the stronger claim: both tiers round the same binary64
+// operations in the same order, so the shortest round-trip strings must agree
+// exactly. The ms fields are measurements for the record, not assertions.
+//
+// The program must also pass as a plain run on every backend - the @native
+// kernels are never called from the VM path here, only their twins are, and
+// the one reachable-from-main call below exists so the optimizer keeps the
+// @native bodies in the module for the native tier to find.
+// ============================================================================
+
+class NativeExecBench {
+    @native
+    static func sumSquares(int n): int {
+        var total = 0
+        var i = 0
+        while (i < n) {
+            total = total + i * i
+            i = i + 1
+        }
+        return total
+    }
+
+    // An all-double signature: multiply-add over binary64, one rounding per
+    // operation on either tier, no fused instructions to disagree about.
+    @native
+    static func poly(double x): double {
+        return x * 1.5 + 0.1
+    }
+
+    static func sumSquaresVm(int n): int {
+        var total = 0
+        var i = 0
+        while (i < n) {
+            total = total + i * i
+            i = i + 1
+        }
+        return total
+    }
+
+    static func polyVm(double x): double {
+        return x * 1.5 + 0.1
+    }
+
+    func main(): void {
+        // Reach both @native kernels exactly once. Not because the VM can run
+        // them - reaching a stub raises the catchable fallback error - but
+        // because a function no reachable body calls is dead code, and the
+        // optimizer (correctly) removes it before the native tier sees it.
+        try {
+            log(NativeExecBench.sumSquares(1))
+        } catch Exception e {
+            log("vm fallback: " + e.message)
+        }
+        try {
+            log(NativeExecBench.poly(0.5))
+        } catch Exception e {
+            log("vm fallback: " + e.message)
+        }
+
+        var iters = 10000
+
+        // The int pair. The closed form (sum of i^2 for i in [0,100) is
+        // 99*100*199/6 = 328350) settles the kernel's contract first, so a
+        // loop total is never compared against a wrong unit.
+        var unit = NativeExecBench.sumSquaresVm(100)
+        if (unit != 328350) {
+            throw new Exception("NativeExecBench: kernel unit is 328350, got " + unit)
+        }
+        var total = 0
+        var start = Time.nowMillis()
+        var i = 0
+        while (i < iters) {
+            total = total + NativeExecBench.sumSquaresVm(100)
+            i = i + 1
+        }
+        var elapsed = Time.nowMillis() - start
+        if (total != unit * iters) {
+            throw new Exception("NativeExecBench: VM loop total disagrees")
+        }
+        log("vm-exec: NativeExecBench.sumSquaresVm(int) result=" + unit +
+            " iters=" + iters + " total=" + total + " vm_ms=" + elapsed)
+
+        // The double pair. 0.7 is not representable; that is the point - the
+        // tiers must agree on *which* double comes out. Both accumulate in the
+        // same order: total = total + poly(0.7), ten thousand times.
+        var dunit = NativeExecBench.polyVm(0.7)
+        var dtotal = 0.0
+        var dstart = Time.nowMillis()
+        var j = 0
+        while (j < iters) {
+            dtotal = dtotal + NativeExecBench.polyVm(0.7)
+            j = j + 1
+        }
+        var delapsed = Time.nowMillis() - dstart
+        log("vm-exec: NativeExecBench.polyVm(double) result=" + dunit +
+            " iters=" + iters + " total=" + dtotal + " vm_ms=" + delapsed)
+        log("ok")
+    }
+}

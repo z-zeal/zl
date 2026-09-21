@@ -66,6 +66,7 @@ set(SOURCES
     ${CMAKE_SOURCE_DIR}/src/mir/lowering.cpp
     ${CMAKE_SOURCE_DIR}/src/mir/opt_constant.cpp
     ${CMAKE_SOURCE_DIR}/src/mir/opt_dead.cpp
+    ${CMAKE_SOURCE_DIR}/src/mir/opt_dead_functions.cpp
     ${CMAKE_SOURCE_DIR}/src/mir/opt_simplify.cpp
     ${CMAKE_SOURCE_DIR}/src/mir/pass_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/mir/printer.cpp
@@ -76,6 +77,7 @@ set(SOURCES
     ${CMAKE_SOURCE_DIR}/src/mir/verifier.cpp
     ${CMAKE_SOURCE_DIR}/src/mir/vm_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/native/emit.cpp
+    ${CMAKE_SOURCE_DIR}/src/native/exec.cpp
     ${CMAKE_SOURCE_DIR}/src/native/lir.cpp
     ${CMAKE_SOURCE_DIR}/src/native/pipeline.cpp
     ${CMAKE_SOURCE_DIR}/src/native/select.cpp
@@ -327,6 +329,7 @@ endif()
 # it links the front end (its end-to-end cases lower real ZL source) plus the
 # native sources themselves.
 zl_add_vm_test(zl-native-backend-tests tests/native_backend_tests.cpp)
+zl_add_vm_test(zl-native-exec-tests tests/native_exec_tests.cpp)
 
 # --- MIR (mid-level IR) -----------------------------------------------------
 # Two targets, split by what they need to link.
@@ -381,14 +384,17 @@ zl_add_required_test(zl-mir-opt-tests tests/mir_pass_tests.cpp
     src/mir/instruction.cpp
     src/mir/opt_constant.cpp
     src/mir/opt_dead.cpp
+    src/mir/opt_dead_functions.cpp
     src/mir/opt_simplify.cpp
     src/mir/pass_manager.cpp
     src/mir/printer.cpp
+    src/mir/reachability.cpp
     src/mir/ssa.cpp
     src/mir/type.cpp
     src/mir/verifier.cpp
     src/mir/safety.cpp
     src/compiler/operator_rules.cpp
+    src/compiler/native_catalog.cpp
     src/compiler/semantic_types.cpp
     src/common/type_name.cpp)
 
@@ -681,6 +687,15 @@ if(BUILD_TESTING)
         add_test(NAME sum-match-parity COMMAND ${ZL_PARITY_PYTHON}
             ${CMAKE_SOURCE_DIR}/tests/sum_match_parity.py $<TARGET_FILE:zl_language>)
         set_tests_properties(sum-match-parity PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    endif()
+    # Native execution parity (P1-6): the emitted x86-64 bytes, run by the
+    # driver, must compute the same number as the VM loop over the same
+    # program - and the driver must refuse what it cannot honestly call.
+    # Skips off x86-64 Linux, where the driver refuses by design.
+    if(ZL_PARITY_PYTHON)
+        add_test(NAME native-exec-parity COMMAND ${ZL_PARITY_PYTHON}
+            ${CMAKE_SOURCE_DIR}/tests/native_exec_parity.py $<TARGET_FILE:zl_language>)
+        set_tests_properties(native-exec-parity PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
     endif()
 endif()
 

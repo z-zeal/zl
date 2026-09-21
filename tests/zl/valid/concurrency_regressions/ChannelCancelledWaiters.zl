@@ -1,0 +1,67 @@
+import zl.lang.Channel
+
+// ============================================================================
+// Regression fixture - valid/concurrency_regressions - ChannelCancelledWaiters
+//
+// P1-10 (channel cancellation/progress interactions): the original channel
+// reports were hangs. A cancelled task is the interesting case - its waiter
+// entry must never consume or swallow a later operation. The runtime guards
+// this at three layers: a cancelled pending operation removes itself from the
+// queue (cancellation hook), every rendezvous path skips entries whose task
+// is already terminal, and a sync operation that can no longer be matched
+// reports a deadlock error instead of waiting forever - re-evaluated every
+// pump round, so a task that finishes without touching the channel cannot
+// extend the wait. This fixture pins the user-visible consequences in both
+// directions, deterministically, on one thread.
+// ============================================================================
+
+class ChannelCancelledWaiters {
+    func main(): void {
+        // A cancelled receiveAsync must not swallow the next send.
+        var c = Channel.create(1)
+        var waiter = Channel.receiveAsync(c)
+        waiter.cancel()
+        Channel.send(c, "after")
+        var got = Channel.receive(c)
+        if (got != "after") {
+            throw new Exception("ChannelCancelledWaiters: send after a cancelled receiver was lost")
+        }
+
+        // A cancelled sendAsync can no longer deliver: with the one-slot buffer
+        // filled and then drained, the only pending sender was the ghost, and
+        // the next receive must end in the deadlock error, not a hang and not
+        // the ghost value.
+        var d = Channel.create(1)
+        Channel.send(d, "first")
+        var ghost = Channel.sendAsync(d, "never")
+        ghost.cancel()
+        var one = Channel.receive(d)
+        if (one != "first") {
+            throw new Exception("ChannelCancelledWaiters: buffered head was not the first send")
+        }
+        var outcome = "hang"
+        try {
+            var two = Channel.receive(d)
+            outcome = "ghost:" + two
+        } catch Exception e {
+            outcome = "error"
+        }
+        if (outcome != "error") {
+            throw new Exception("ChannelCancelledWaiters: an unmatchable receive must end in the deadlock error, got " + outcome)
+        }
+
+        // With the cancelled receiver gone, the next live receiver rendezvotes
+        // exactly as if the dead one had never existed.
+        var ch3 = Channel.create(1)
+        var dead = Channel.receiveAsync(ch3)
+        dead.cancel()
+        var live = Channel.receiveAsync(ch3)
+        Channel.send(ch3, "match")
+        var val = live.block()
+        if (val != "match") {
+            throw new Exception("ChannelCancelledWaiters: live receiver did not get the payload")
+        }
+
+        log("ok")
+    }
+}

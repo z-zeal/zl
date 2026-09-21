@@ -4,6 +4,10 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 #include "zl/mir/analysis.hpp"
 #include "zl/mir/effects.hpp"
@@ -234,15 +238,28 @@ DifferentialResult compareModules(const Module& before, const Module& after,
     result.instructionsAfter = countAll(after);
 
     if (options.compareStructure) {
-        if (before.functions.size() != after.functions.size()) {
+        // Removal is legal only for `eliminate-dead-functions`, and its licence
+        // is the reachability report's completeness proof, not something this
+        // comparison can re-derive. So the shape rule is asymmetric: the
+        // optimiser may shrink the function list (the pairing below requires a
+        // subsequence, so nothing may be added, moved or renamed), and every
+        // other change to the module's shape stays a mismatch.
+        if (after.functions.size() > before.functions.size()) {
             addMismatch(result, options, "", "structure",
-                        "function count changed: " + std::to_string(before.functions.size()) + " -> " +
+                        "function count grew: " + std::to_string(before.functions.size()) + " -> " +
                             std::to_string(after.functions.size()));
         }
-        if (before.entryPoint != after.entryPoint) {
+        // The entry point is compared by name, not by id: removing functions
+        // renumbers the survivors, and renumbering is not the entry point
+        // changing. A null entry point may only stay null.
+        const Function* beforeEntry = before.function(before.entryPoint);
+        const Function* afterEntry = after.function(after.entryPoint);
+        if ((beforeEntry == nullptr) != (afterEntry == nullptr) ||
+            (beforeEntry && afterEntry && beforeEntry->name != afterEntry->name)) {
             addMismatch(result, options, "", "structure",
-                        "entry point changed: " + std::to_string(before.entryPoint) + " -> " +
-                            std::to_string(after.entryPoint));
+                        "entry point changed: " +
+                            std::string(beforeEntry ? beforeEntry->name : "(none)") + " -> " +
+                            std::string(afterEntry ? afterEntry->name : "(none)"));
         }
         if (before.classes.size() != after.classes.size()) {
             addMismatch(result, options, "", "structure",
@@ -267,18 +284,64 @@ DifferentialResult compareModules(const Module& before, const Module& after,
     // makes the event comparison strict against the raw original).
     const Module reference = options.normalizeBefore ? baselineOf(before, options.referencePipeline) : before;
 
-    const std::size_t shared = std::min(before.functions.size(), after.functions.size());
-    for (std::size_t i = 0; i < shared; ++i) {
-        const Function& beforeFunction = before.functions[i];
-        const Function& afterFunction = after.functions[i];
+    // Functions are paired by name, not by index: `eliminate-dead-functions`
+    // may remove entries from the middle of the vector and renumber what
+    // survives, and index pairing would read that as every later function
+    // having been renamed. The pairing is still exact where exactness is the
+    // point - each function of `after` must appear in `before` once, the order
+    // of survivors must be the order they had before, and anything else is a
+    // mismatch. What removal itself does is get a note, not a failure: whether
+    // a function was allowed to go at all is decided by the reachability
+    // report's completeness proof, and the pipeline's final whole-module
+    // verification is what confirms nothing still names a removed function.
+    std::unordered_map<std::string, std::size_t> afterIndices;
+    for (std::size_t j = 0; j < after.functions.size(); ++j)
+        afterIndices.emplace(after.functions[j].name, j);
+    std::unordered_map<std::string, std::size_t> referenceIndices;
+    for (std::size_t j = 0; j < reference.functions.size(); ++j)
+        referenceIndices.emplace(reference.functions[j].name, j);
+    std::unordered_set<std::string> beforeNames;
+    for (const Function& function : before.functions) beforeNames.insert(function.name);
+
+    std::vector<std::pair<std::size_t, std::size_t>> pairs;
+    std::size_t removedFunctions = 0;
+    std::size_t lastMatchedAfter = 0;
+    bool haveLastMatched = false;
+    for (std::size_t i = 0; i < before.functions.size(); ++i) {
+        const std::string& name = before.functions[i].name;
+        const auto found = afterIndices.find(name);
+        if (found == afterIndices.end()) {
+            ++removedFunctions;
+            continue;
+        }
+        if (haveLastMatched && found->second < lastMatchedAfter) {
+            addMismatch(result, options, name, "structure", "function order changed");
+            continue;
+        }
+        lastMatchedAfter = found->second;
+        haveLastMatched = true;
+        pairs.emplace_back(i, found->second);
+    }
+    if (pairs.size() != after.functions.size()) {
+        for (const Function& function : after.functions) {
+            if (beforeNames.count(function.name) == 0) {
+                addMismatch(result, options, function.name, "structure", "function was added");
+                break;
+            }
+        }
+    }
+    if (removedFunctions != 0) {
+        result.notes.push_back("module: " + std::to_string(removedFunctions) +
+                              " function(s) removed by the optimiser; the survivors pair with "
+                              "the original by name and order");
+    }
+
+    for (const auto& [beforeIndex, afterIndex] : pairs) {
+        const Function& beforeFunction = before.functions[beforeIndex];
+        const Function& afterFunction = after.functions[afterIndex];
         ++result.functionsCompared;
 
         if (options.compareStructure) {
-            if (beforeFunction.name != afterFunction.name) {
-                addMismatch(result, options, beforeFunction.name, "structure",
-                            "function identity changed to " + afterFunction.name);
-                continue;
-            }
             const std::string beforeSignature = renderSignature(before, beforeFunction);
             const std::string afterSignature = renderSignature(after, afterFunction);
             if (beforeSignature != afterSignature) {
@@ -289,7 +352,19 @@ DifferentialResult compareModules(const Module& before, const Module& after,
 
         if (!options.compareObservableEvents) continue;
 
-        const Function& baselineFunction = reference.functions[i];
+        const auto baselineIt = referenceIndices.find(beforeFunction.name);
+        if (baselineIt == referenceIndices.end()) {
+            // The reference is the same pipeline run over the same input; if it
+            // dropped a function `after` kept (or vice versa), the module under
+            // judgment was not built the way the options claim, and event
+            // comparison against this baseline would say something about that
+            // mismatch and nothing about the optimisation.
+            addMismatch(result, options, beforeFunction.name, "structure",
+                        "the baseline module removed this function but the optimised one kept it - "
+                        "`after` was not built by the reference pipeline");
+            continue;
+        }
+        const Function& baselineFunction = reference.functions[baselineIt->second];
         const std::vector<std::string> beforeEvents = observableEventsOf(before, beforeFunction, {});
         const std::vector<std::string> baselineEvents =
             observableEventsOf(reference, baselineFunction, {});

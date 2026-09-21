@@ -1,0 +1,68 @@
+// ============================================================================
+// Regression fixture - valid/concurrency_regressions - UnobservedTaskFailure
+//
+// P1-7 (unobserved failures): a Task whose body failed and that nobody ever
+// collected used to vanish - the failure was kept in the task state, which
+// was then dropped with it. The contract now is:
+//
+//   * observing a failed task (block()) rethrows the failure as a catchable
+//     exception with its message - re-pinned here;
+//   * ignore() detaches the failure deliberately - silent, by contract;
+//   * a task that fails with no collector reports "unobserved task failure"
+//     on stderr when its state dies, instead of disappearing;
+//   * a *successful* dropped task stays silent - the report is a failure
+//     channel, not a leak detector.
+//
+// The stderr line itself is pinned by testUnobservedFailureReport in
+// tests/runtime_task_executor_tests.cpp; this fixture pins the end-to-end
+// program semantics: every path below must leave the process exiting cleanly,
+// and the failing calls at the end are what used to vanish silently.
+// ============================================================================
+
+class UnobservedTaskFailure {
+    func check(bool cond, string what): void {
+        if (!cond) {
+            throw new Exception("UnobservedTaskFailure failed: " + what)
+        }
+    }
+
+    public async func failer(string tag): int {
+        var zero = 0
+        if (tag == "boom") {
+            return 1 / zero
+        }
+        return 7
+    }
+
+    func main(): void {
+        var self = new UnobservedTaskFailure()
+
+        // Observed failure: rethrown through block(), catchable, message kept.
+        var seen = self.failer("boom")
+        var message = ""
+        try {
+            seen.block()
+            self.check(false, "block() on a failed task must not return quietly")
+        } catch e {
+            message = e
+        }
+        self.check(message == "division by zero", "the observed failure names the original error")
+
+        // ignore() detaches: the same failure now stays inside the task and
+        // must not be reported at teardown, and must not throw anywhere.
+        var detached = self.failer("boom")
+        detached.ignore()
+        self.check(true, "ignore() returns without disturbing the program")
+
+        // A dropped *success* is silent and harmless.
+        self.failer("ok")
+
+        // Dropped failures report themselves at teardown (stderr). The gate
+        // here is the clean exit: a report must not become a crash, a hang,
+        // or a non-zero status, and the tasks must not be waited on forever.
+        self.failer("boom")
+        self.failer("boom")
+
+        log("UnobservedTaskFailure ok")
+    }
+}

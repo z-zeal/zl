@@ -80,10 +80,33 @@ pending channel tasks retain their operation owner. `gc_lifetime_tests.cpp` cont
 retirement so another collection must complete while a retired thread is joined;
 `type_boundaries.py` also checks async failure propagation.
 
-The remaining stabilization gate includes external FFI callback quiescence/ownership,
-channel cancellation/progress interactions, other blocking native-resource finalizers
-and the remaining exception/Shared audit. Library expansion, the large type-checker
-split and native lowering remain deferred.
+The stabilization gate that remained after that batch - external FFI callback
+quiescence/ownership, channel cancellation/progress interactions, blocking
+native-resource finalizers, and the exception/Shared audit - closed on
+2026-09-20, each item at a fixture or a written argument:
+
+- **FFI callback quiescence/ownership**: the registry couples every callback to a
+  drain-on-close lifetime, external re-entry looks the token up before dispatch, and
+  owned returns must be registered handles - mechanics, fixtures and the accepted
+  trade are written up in [docs/native.md](../docs/native.md#callback-quiescence-and-ownership-stabilization-audit-closed-2026-09-20).
+- **Channel cancellation/progress**: a cancelled waiter is removed from its queue,
+  every rendezvous path skips terminal tasks, and an unmatchable blocking operation
+  reports the deadlock error instead of waiting - re-checked each pump round. Pinned
+  by `tests/zl/valid/concurrency_regressions/ChannelCancelledWaiters.zl` (both
+  directions, deterministic, one thread); the sync/async cross-match this interacts
+  with is `ChannelSyncAsyncMix.zl`.
+- **Blocking native-resource finalizers**: they do not exist - the collector never
+  finalizes handles; release is explicit boundary consumption only, and the leak that
+  buys is argued in [docs/native.md](../docs/native.md#no-gc-path-finalizers-for-native-resources-same-audit).
+- **Exception/Shared audit**: `Shared<T>.withLock` releases on throw and stays usable
+  - second throw included - now pinned by
+  `tests/zl/valid/concurrency_regressions/SharedLockThrowRelease.zl`, the cell-variant
+  counterpart to the `MutexLocks.zl` pin from the O5 fix; the lost-update guidance
+  (O20) stays measured-and-documented rather than "fixed", because `withLock` exactness
+  under threads is `SharedLostUpdateMeasurement.zl`.
+
+Library expansion and the large type-checker split remain deferred; native lowering
+progress is tracked under P1-6/PF-3.
 
 ## Fixed in this branch
 

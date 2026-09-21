@@ -1,0 +1,86 @@
+// ============================================================================
+// Regression fixture - valid/concurrency_regressions - AsyncLambdaTasks
+//
+// P1-7 (async lambdas): `async func(x) => ...` parsed on the reference
+// pipeline but the MIR pipeline typed the *callable's signature* as already
+// carrying the Task and wrapped it again at the call boundary, so every
+// `call_indirect` to an async lambda died in verification with
+// "call_indirect produces Task<Task<int>> but the temp is typed Task<int>".
+// A signature marked async states the Task at the call boundary - it must
+// record the body's result type, exactly like an async MIR function declares
+// its body type - and a call through a func value must carry the Task's
+// payload out so `.block()` on it knows what it hands back.
+//
+// This fixture runs every async-lambda spelling the language promises:
+// arrow body, block body with `return`, a void body, an object payload read
+// through a method on the collected value, an `await` inside the lambda's
+// body (the lambda suspends, the scheduler pumps it), and a failure observed
+// as a catchable exception through `block()`.
+// ============================================================================
+
+class Payload {
+    public int n
+
+    func Payload(int n): void {
+        this.n = n
+    }
+
+    public func doubled(): int { return this.n * 2 }
+}
+
+class AsyncLambdaTasks {
+    func check(bool cond, string what): void {
+        if (!cond) {
+            throw new Exception("AsyncLambdaTasks failed: " + what)
+        }
+    }
+
+    func main(): void {
+        var self = new AsyncLambdaTasks()
+
+        // Arrow body, and the same lambda called twice through one Task-typed
+        // local: the result slot must stay Task<int>, not Task<Task<int>>.
+        var double_ = async func(int x) => x + x
+        var first = double_(21)
+        var second = double_(100)
+        self.check(first.block() == 42, "arrow-body async lambda returns its value")
+        self.check(second.block() == 200, "the same async lambda stays callable")
+
+        // Block body with an explicit return.
+        var shifted = async func(int x) { return x - 1 }
+        self.check(shifted(10).block() == 9, "block-body async lambda returns")
+
+        // A void async body still completes (the runtime nil of the task).
+        var fired = async func() { var unused = 1 }
+        fired()
+        self.check(true, "void async lambda completes without a return")
+
+        // Object payload: block() hands back the class, whose methods type.
+        var made = async func() => new Payload(21)
+        self.check(made().block().doubled() == 42, "block() on an object payload keeps its type")
+
+        // A lambda whose body awaits: suspension works inside a lambda too.
+        var sleeper = async func(int ms) {
+            await Time.sleepAsync(ms)
+            return ms + 1
+        }
+        self.check(sleeper(5).block() == 6, "await works inside an async lambda body")
+
+        // Failure inside an async lambda is a normal task failure: block()
+        // rethrows it where it is observed, catchable as a ZL exception.
+        var z = 0
+        var boom = async func() => 1 / z
+        var threw = false
+        try {
+            boom().block()
+        } catch e {
+            threw = true
+        }
+        self.check(threw, "a failing async lambda surfaces through block()")
+
+        // Dropped failures still report at teardown (stderr), and ignore()
+        // detaches; both must leave the program ending cleanly.
+        boom().ignore()
+        log("AsyncLambdaTasks ok")
+    }
+}

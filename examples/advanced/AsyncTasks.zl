@@ -9,6 +9,12 @@
 // `main` may itself be `async func`, which is the natural entry point for async
 // code - the runtime waits for it to settle before the process exits.
 //
+// `async func` is also a lambda modifier: `async func(x) => ...` makes the
+// same `Task<T>` a named async function makes, usable wherever a value is.
+//
+// `Task.cancel()` requests cancellation; the task observes it at its next
+// `await`, and the request cascades to the tasks spawned from its body.
+//
 // One rule to remember: `main` has no receiver, so `this` is not bound inside
 // it. Create an instance and call through that, as below. See TaskBlocking.zl
 // for driving async work from a synchronous `main` instead.
@@ -46,6 +52,9 @@ class AsyncTasks {
 
         log("square " + await svc.compute(9))
 
+        var squared = async func(int n) => n * n
+        log("async lambda " + await squared(6))
+
         log("end")
     }
 }
@@ -55,5 +64,6 @@ class AsyncTasks {
 // loaded user-7
 // pair user-1,user-2
 // square 81
+// async lambda 36
 // end
 // --- End expected output ---

@@ -13,9 +13,15 @@
 //
 // MIR knows every call a program makes, so "which functions can run" is a
 // question the IR can answer without guessing - with one deliberate exception.
-// Reflection's invoke family takes a `Method`/`Function`/`Constructor` value and
-// calls whatever it describes, so a module that calls one of those has no closed
-// call graph, and this analysis says so instead of returning a plausible subset.
+// The reflection family reads or enters code by name: the invoke forms take a
+// `Method`/`Function`/`Constructor` value and call whatever it describes, and
+// the enumeration forms (`Type.methods()` and friends) hand the module's
+// function table to the program as data. A module that reaches either has no
+// closed call graph *and* an observable function table, and this analysis says
+// so instead of returning a plausible subset. The enumeration half is not
+// paranoia: a removal that nothing can execute still changes what such a
+// program prints, because the method list it prints is built from the function
+// list the removal edited (`nativeIsReflective` in the catalog is the list).
 //
 // Everything here is an *over*-approximation, and the direction matters:
 //
@@ -23,10 +29,18 @@
 //     every override in every subtype is kept, not only the ones a whole-program
 //     type derivation could prove reachable;
 //   * a call whose class name is not in the module keeps every function with
-//     that method name;
+//     that method name, matched on the bare method token the backend
+//     dispatches by (`push`, `area` - not `Shape.area`);
 //   * a static field's initializer is kept when the field is referenced, because
 //     "lazily initialised" means the initializer runs at first access, not at
-//     load time.
+//     load time (the removal pass widens this to *every* initializer: see
+//     `opt_dead_functions.cpp`);
+//   * dispatch the *backend* materialises from instructions that name no
+//     callee - shared-cell access, collection literal growth and
+//     construction - is followed through the same table the emitter uses
+//     (`backend_edges.hpp`), and a dispatch site that resolves to no
+//     candidate anywhere makes the report incomplete rather than "closed to
+//     nothing".
 //
 // Over-approximating is what makes the result usable for anything that would
 // *remove* code: a function this analysis calls unreachable really is
@@ -64,8 +78,9 @@
 //     block parameter, a static, a temp with any other definition, a slot
 //     with zero or multiple stores). The value may hold *any* function the
 //     caller chooses, so the reachable set is a lower bound;
-//   * **reflection/dynamic dispatch** - a native that enters code by name
-//     (the reflection invoke family): the callee is a runtime value.
+//   * **reflection** - any native of the reflection family: an invoke form
+//     makes the callee a runtime value, and an enumeration form makes the
+//     function table itself observable, so removals are visible in output.
 //
 // An unresolved edge is never silently dropped and never "explained away" by
 // assuming the operand's current lowering pattern: a callee that is provably
@@ -82,9 +97,10 @@ struct ReachabilityReport {
     // False when the module has no entry point at all (a library): `functions`
     // is then empty and says nothing about the module.
     bool hasEntryPoint{false};
-    // Set when a function that can run calls a native that enters code by name.
-    // `functions` is a lower bound in that case, so a caller that would delete
-    // anything must refuse.
+    // Set when a function that can run reaches a native of the reflection
+    // family (one that enters code by name, or reads the function table as
+    // data). `functions` is a lower bound in that case, and the table itself
+    // is observable, so a caller that would delete anything must refuse.
     bool dynamicEntry{false};
     std::string dynamicEntryReason;
     // Set when a function that can run executes a function value it cannot

@@ -104,7 +104,11 @@ void parseAnnotationLine(const std::string& line, std::string& ownership, std::s
 std::string mapType(const std::string& t) {
     auto x = trim(t);
     if (x == "void") return "void";
-    if (x == "int" || x == "int32_t" || x == "int64_t" || x == "uint32_t" || x == "uint64_t") return "int";
+    // Fixed-width integers only: `long`, `long long` and their spellings are
+    // deliberately absent because their width is target-dependent, and the
+    // generator promises a stable mapping, not a platform guess.
+    if (x == "int" || x == "int8_t" || x == "uint8_t" || x == "int16_t" || x == "uint16_t" ||
+        x == "int32_t" || x == "int64_t" || x == "uint32_t" || x == "uint64_t") return "int";
     if (x == "double" || x == "float") return "double";
     if (x == "bool") return "bool";
     if (x == "const char*" || x == "char*") return "string";
@@ -182,16 +186,36 @@ ParsedHeader parseHeaderFile(const std::string& path) {
             auto name = c.require(TokenKind::Identifier, "member name").text;
             if (!c.take("(")) {
                 c.requireText(";");
-                continue; // data member; zl-bind exposes methods only
+                // Data member: classes ignore them (methods only), but a plain
+                // data struct's schema is exactly this field list.
+                current.fields.push_back({ret, name});
+                continue;
             }
             auto params = parseParams(c); bool isConst = c.take("const"); c.requireText(";");
             validate(params, ret); current.methods.push_back({ret, name, std::move(params), isConst, false});
         }
         if (!closed) throw std::runtime_error("unterminated native class " + current.name);
+        if (current.kind == "struct" && !current.hasConstructor && !current.hasDestructor && current.methods.empty()) {
+            // A plain-data C struct: bind it field by field. Pointers, arrays
+            // and non-scalars never reach here as valid field types - they are
+            // refused now, at the schema, rather than guessed at later.
+            if (current.fields.empty())
+                throw std::runtime_error("native struct " + current.name + " has no bindable fields");
+            NativeStruct out;
+            out.name = current.name;
+            for (const auto& field : current.fields) {
+                const auto mapped = mapType(field.type);
+                if (mapped != "int" && mapped != "double" && mapped != "bool")
+                    throw std::runtime_error("unsupported struct field type: " + field.type + " (struct fields must be scalar ints, doubles or bools)");
+                out.fields.push_back(field);
+            }
+            result.structs.push_back(std::move(out));
+            continue;
+        }
         if (!current.hasConstructor) throw std::runtime_error("native class " + current.name + " requires an explicit constructor");
         current.ownership = classOwnership; current.errors = classErrors; result.classes.push_back(std::move(current));
     }
-    if (result.functions.empty() && result.classes.empty()) throw std::runtime_error("no bindable declarations found in " + path);
+    if (result.functions.empty() && result.classes.empty() && result.structs.empty()) throw std::runtime_error("no bindable declarations found in " + path);
     return result;
 }
 

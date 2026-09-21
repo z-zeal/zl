@@ -248,6 +248,7 @@ void registerBuiltinPasses() {
     registry.registerPass("simplify-branches", [] { return createBranchSimplificationPass(); });
     registry.registerPass("eliminate-dead-blocks", [] { return createDeadBlockEliminationPass(); });
     registry.registerPass("eliminate-dead-values", [] { return createDeadValueEliminationPass(); });
+    registry.registerPass("eliminate-dead-functions", [] { return createEliminateDeadFunctionsPass(); });
 }
 
 // ---------------------------------------------------------------------------
@@ -364,9 +365,18 @@ PassManager PassManager::defaultPipeline() {
 
     // Ordering, and why:
     //
-    //   simplify-branches   first, because a branch on a constant is the
-    //                       cheapest win available and it *creates* the
-    //                       unreachable blocks the next pass removes.
+    //   eliminate-dead-functions
+    //                       first, and the only module pass: a function that
+    //                       cannot run needs no per-function passes run over
+    //                       it, and the smaller module is what every later
+    //                       pass (and the verifier at the end) walks. It runs
+    //                       again each iteration, so a call site some other
+    //                       pass deletes can strand a function that was live
+    //                       on the way in.
+    //   simplify-branches   first among the function passes, because a branch
+    //                       on a constant is the cheapest win available and it
+    //                       *creates* the unreachable blocks the next pass
+    //                       removes.
     //   eliminate-dead-blocks
     //                       immediately after, so the value passes walk a CFG
     //                       with no dead regions in it - a dead block can
@@ -397,6 +407,7 @@ PassManager PassManager::defaultPipeline() {
     // the last pass enables the first one again: values that become constant
     // late turn into branches on constants that were not constant on the way
     // in.
+    manager.addPass(createEliminateDeadFunctionsPass());
     manager.addPass(createBranchSimplificationPass());
     manager.addPass(createDeadBlockEliminationPass());
     manager.addPass(createConstantFoldingPass());
@@ -439,12 +450,38 @@ OptimizationReport PassManager::run(Module& module, const OptimizationOptions& o
             // A module pass runs once per iteration, over the whole module.
             if (pass->isModulePass()) {
                 auto* modulePass = static_cast<ModulePass*>(pass.get());
+                // The module-wide shape before and after, so a module pass
+                // appears in the report with real numbers rather than zeros -
+                // `instructionsRemoved()` and the `--mir-opt-check` trace both
+                // read these fields, and a whole-module rewrite that shows up
+                // as "0 -> 0" would hide exactly the change it should be
+                // accountable for.
+                std::size_t instructionsBefore = 0;
+                std::size_t blocksBefore = 0;
+                for (const Function& function : module.functions) {
+                    instructionsBefore += countInstructions(function);
+                    blocksBefore += countBlocks(function);
+                }
                 const bool changed = modulePass->runOnModule(module, analyses);
+                std::size_t instructionsAfter = instructionsBefore;
+                std::size_t blocksAfter = blocksBefore;
+                if (changed) {
+                    instructionsAfter = 0;
+                    blocksAfter = 0;
+                    for (const Function& function : module.functions) {
+                        instructionsAfter += countInstructions(function);
+                        blocksAfter += countBlocks(function);
+                    }
+                }
                 PassRunRecord record;
                 record.pass = pass->name();
                 record.function = "<module>";
                 record.iteration = iteration;
                 record.changed = changed;
+                record.instructionsBefore = instructionsBefore;
+                record.instructionsAfter = instructionsAfter;
+                record.blocksBefore = blocksBefore;
+                record.blocksAfter = blocksAfter;
                 record.note = pass->lastNote();
                 report.runs.push_back(record);
                 if (changed) {

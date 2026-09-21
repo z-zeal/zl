@@ -12,6 +12,7 @@
 #include <chrono>
 #include <exception>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -165,6 +166,95 @@ void testTaskCancellation() {
     require(threw, "observing a cancelled task surfaces the cancellation");
 }
 
+// A failed task nobody ever observes must report itself when it dies (the
+// P1-7 unobserved-failure gap), and observing it must silence the report.
+void testUnobservedFailureReport() {
+    auto dropped = std::make_shared<zl::RuntimeTaskState>("int");
+    dropped->start();
+    dropped->fail(std::make_exception_ptr(std::runtime_error("nobody looked")));
+    std::ostringstream capture;
+    std::streambuf* previous = std::cerr.rdbuf(capture.rdbuf());
+    dropped.reset(); // the destructor reports at the moment the task dies
+    std::cerr.rdbuf(previous);
+    require(capture.str().find("unobserved task failure") != std::string::npos,
+            "a dropped failed task reports itself at teardown");
+    require(capture.str().find("nobody looked") != std::string::npos,
+            "the report names the failure it is about");
+
+    auto observed = std::make_shared<zl::RuntimeTaskState>("int");
+    observed->start();
+    observed->fail(std::make_exception_ptr(std::runtime_error("seen")));
+    try {
+        (void)observed->observe();
+    } catch (const std::exception&) {
+    }
+    capture.str("");
+    std::cerr.rdbuf(capture.rdbuf());
+    observed.reset();
+    std::cerr.rdbuf(previous);
+    require(capture.str().empty(), "an observed failure is not reported twice");
+
+    auto ignored = std::make_shared<zl::RuntimeTaskState>("int");
+    ignored->start();
+    ignored->fail(std::make_exception_ptr(std::runtime_error("detached")));
+    ignored->ignore();
+    capture.str("");
+    std::cerr.rdbuf(capture.rdbuf());
+    ignored.reset();
+    std::cerr.rdbuf(previous);
+    require(capture.str().empty(), "ignore() detaches the failure deliberately");
+}
+
+// Cancellation cascades along the spawn edge, and only along it (P1-7):
+// a task cancelled (requested or terminal) hands the request to the tasks
+// spawned from its body, which hand it to their own children, and a spawn
+// that races the cascade is cancelled on arrival.
+void testCancellationCascade() {
+    auto parent = std::make_shared<zl::RuntimeTaskState>("int");
+    auto child = std::make_shared<zl::RuntimeTaskState>("int");
+    auto grandchild = std::make_shared<zl::RuntimeTaskState>("int");
+    child->start();
+    grandchild->start();
+    parent->addSpawnedChild(child);
+    child->addSpawnedChild(grandchild);
+    parent->requestCancellation();
+    require(child->cancellationRequested(), "a running child takes its parent's cancellation");
+    require(grandchild->cancellationRequested(), "the request cascades to a grandchild");
+    require(child->status() == zl::TaskStatus::Running,
+            "propagation stays cooperative: a request is not a terminal transition");
+
+    auto late = std::make_shared<zl::RuntimeTaskState>("int");
+    parent->addSpawnedChild(late);
+    require(late->cancellationRequested(), "a spawn racing the cascade is cancelled on arrival");
+
+    // A terminal cancellation of a parent still reaches live children.
+    auto p2 = std::make_shared<zl::RuntimeTaskState>("int");
+    auto c2 = std::make_shared<zl::RuntimeTaskState>("int");
+    c2->start();
+    p2->addSpawnedChild(c2);
+    p2->cancel();
+    require(c2->cancellationRequested(), "a parent's terminal cancellation still cascades");
+
+    // Siblings and strangers are untouched: the relation is spawn, not scope.
+    auto sibling = std::make_shared<zl::RuntimeTaskState>("int");
+    auto stranger = std::make_shared<zl::RuntimeTaskState>("int");
+    sibling->start();
+    stranger->start();
+    auto p3 = std::make_shared<zl::RuntimeTaskState>("int");
+    p3->addSpawnedChild(sibling);
+    p3->requestCancellation();
+    require(sibling->cancellationRequested(), "the registered sibling is cancelled");
+    require(!stranger->cancellationRequested(), "an unrelated task keeps running");
+
+    // Dropping a parent must not drop a live child (weak, not owned): the
+    // child still reports its own failure at its own teardown.
+    auto dropParent = std::make_shared<zl::RuntimeTaskState>("int");
+    auto dropChild = std::make_shared<zl::RuntimeTaskState>("int");
+    dropParent->addSpawnedChild(dropChild);
+    dropParent.reset();
+    require(dropChild.use_count() == 1, "a parent does not keep its child alive");
+}
+
 void testConcurrentObserve() {
     auto task = std::make_shared<zl::RuntimeTaskState>("int");
     std::atomic<int> observers{0};
@@ -220,6 +310,8 @@ int main() {
     testTaskLifecycle();
     testTaskFailureAndObservation();
     testTaskCancellation();
+    testUnobservedFailureReport();
+    testCancellationCascade();
     testConcurrentObserve();
     testThreadState();
 

@@ -153,9 +153,45 @@ that fails verification) - the lock is treated as stale: it is re-resolved from
 scratch and rewritten, with a notice saying why. `zlpkg install --update` forces that
 re-resolve even when the lock is fresh.
 
-Dependencies are fetched over git by shelling out to the system `git` CLI. No registry
-or index exists yet, so every dependency must state exactly where it comes from —
-`path` or `git`, never a bare version number.
+Dependencies are fetched over git by shelling out to the system `git` CLI.
+Every dependency must state exactly where it comes from - `path` or `git`,
+never a bare version number; the scope decision behind that is written down
+below, so "no registry" is a position, not a missing feature.
 
 Git remotes must be `https://`, `ssh://`, or scp-like `user@host:path`.
 `http://`, `git://`, `file://`, and helper transports such as `ext::` are rejected.
+
+### No registry - what it would replace, and what does instead
+
+A registry is a **service**, not a language feature: a hosted name-to-location
+index, plus curation (search, ranking, yanks, ownership). None of it lives in
+this repository's scope, and this section is the decision being written down
+(P2-5) rather than left as a TODO. What the pieces `zlpkg` *does* ship already
+carry:
+
+- **Name resolution.** The registry answer to "where does `geom` come from" is
+  "the manifest says so". The dependency key must equal the package's own
+  `[package] name`, so a wrong URL cannot masquerade as the wanted package,
+  and a diamond that resolves to two different commits is a reported conflict,
+  not a silent pick.
+- **Reproducibility.** `zlpkg.lock` pins the exact commit; the lockfile is
+  committed and validated against a manifest fingerprint on every use, so the
+  registry's "immutable artifact store" role is played by the git object
+  graph.
+- **Versions as identity, not selection.** The declared `version` is verified
+  exactly (`version = "1.2.0"` means that manifest version or an error). No
+  ranges, because range resolution is precisely the part that needs a hosted
+  index to be trustworthy, and without one it would silently widen what a
+  bare name means.
+- **Local iteration** is `path` dependencies; **sharing** is any git host. The
+  missing middle - discoverability of *which* git host owns a name - is
+  accepted as out of scope for a toolchain and is the first thing a future
+  registry would have to supply.
+
+If a registry ever exists, the smallest shape that fits is one more key in the
+same inline-table grammar - a name resolving through an index to the same
+`{ git, ref, version }` triple the tool already consumes - so the resolver's
+fetch, verify, and lock semantics would not change. Nothing in the current
+format rules that out; nothing here commits to it either. Deliberately absent
+for the same reason: dev-dependencies (one manifest, one dependency graph) and
+workspaces (diamond resolution already catches what a workspace would unify).

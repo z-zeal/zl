@@ -160,9 +160,25 @@ struct TypeConverter {
                                              : fromRendered(rendered));
                     }
                     const std::string returnRendered = inferred->functionReturnClassName;
-                    signature.returnType = returnRendered.empty()
-                                               ? primitiveFor(inferred->functionReturnType)
-                                               : fromRendered(returnRendered);
+                    // A signature that carries `isAsync` states the Task at the
+                    // call boundary (verifier: expectedResult = taskType of the
+                    // signature's return), so the signature itself must record
+                    // the *body* result type, exactly like an async MIR function
+                    // declares its body type and the callee flag adds Task<T>.
+                    // The checker renders an async callable's return as the full
+                    // Task<...> name, so decode the body type it stored beside it
+                    // rather than re-wrapping what would already be a Task.
+                    if (inferred->functionIsAsync) {
+                        signature.returnType = inferred->taskValueClassName.empty()
+                                                   ? primitiveFor(inferred->taskValueType)
+                                                   : fromRendered(inferred->taskValueClassName);
+                        if (inferred->taskValueType == zl::ZlType::NIL)
+                            signature.returnType = arena.voidType();
+                    } else {
+                        signature.returnType = returnRendered.empty()
+                                                   ? primitiveFor(inferred->functionReturnType)
+                                                   : fromRendered(returnRendered);
+                    }
                     signature.isAsync = inferred->functionIsAsync;
                     return arena.functionType(std::move(signature));
                 }

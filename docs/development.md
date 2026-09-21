@@ -93,8 +93,10 @@ program, and `zlpkg run` verifies that the adjacent runtime reports a matching v
   the selected backend. `zl file.zl` is that pipeline with the bytecode backend,
   whose chunk the VM executes. `zl --backend native file.zl` is the same pipeline
   with the native backend generating machine code for the supported subset, but
-  the program still executes on the VM; mixed-mode native execution is not
-  implemented. Every command in `main.cpp` is a set of stage options over
+  the program still executes on the VM; mixed-mode native execution inside a
+  program is not implemented (the compiled functions do run, stand-alone, via
+  `zl --run-native` - see [native-backend.md](native-backend.md)). Every command in
+  `main.cpp` is a set of stage options over
   `zl::pipeline::Pipeline` (`include/zl/compiler/pipeline.hpp`), not a pipeline
   of its own. See [`pipeline.md`](pipeline.md) for the stages, their invariants,
   the backend contract and the exit codes.

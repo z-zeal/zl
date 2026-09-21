@@ -1509,6 +1509,14 @@ bool VM::dispatchThrownException(const Chunk& chunk, const ObjectRef& thrown,
 TaskRef VM::scheduleAsyncInvocation(std::shared_ptr<const Chunk> chunk, std::size_t functionIndex,
                                     ExecutionState::CallFrame frame) {
     auto task = std::make_shared<RuntimeTaskState>(frame.returnTypeName);
+    // Spawn relation: a task created while another task's body runs belongs
+    // to it, and that task's cancellation cascades here. The thread-local
+    // covers bodies running on foreign threads (a Task.spawn closure that
+    // calls an async func); the invocation's own task covers every other
+    // call made from inside an async body. A synchronous frame outside any
+    // task has no parent to record, and gets none.
+    if (RuntimeTaskState* parent = gCurrentSpawningTask) parent->addSpawnedChild(task);
+    else if (asyncInvocation_ && asyncInvocation_->task) asyncInvocation_->task->addSpawnedChild(task);
     auto child = std::make_shared<VM>(scheduler_);
     frame.returnIp = chunk->code.size();
     child->asyncInvocation_ = AsyncInvocation{std::move(chunk), functionIndex, std::move(frame), task, 0, false, {}};
@@ -1552,10 +1560,17 @@ void VM::resumeAsyncInvocation() {
             pendingResumeException_ = std::make_exception_ptr(ZlThrownException(makeCancellationException(*asyncInvocation_->chunk)));
         }
         Value result;
-        // Pass the invocation's chunk owner along so closures and nested async
-        // calls inside the async body share it instead of copying per closure.
-        const ExecuteStatus status = execute(*asyncInvocation_->chunk, asyncInvocation_->resumeIp, true, {},
-                                             &result, asyncInvocation_->chunk);
+        ExecuteStatus status;
+        // Mark this thread as running the task's body for the duration of the
+        // step, so a task this body spawns (an async call, a Task.spawn) is
+        // recorded as its child and takes part in its cancellation cascade.
+        {
+            CurrentSpawningTaskGuard spawnGuard{asyncInvocation_->task.get()};
+            // Pass the invocation's chunk owner along so closures and nested async
+            // calls inside the async body share it instead of copying per closure.
+            status = execute(*asyncInvocation_->chunk, asyncInvocation_->resumeIp, true, {},
+                             &result, asyncInvocation_->chunk);
+        }
         if (status == ExecuteStatus::Completed) {
             auto task = asyncInvocation_->task;
             asyncInvocation_.reset();

@@ -133,10 +133,14 @@ Two consequences are worth naming because they surprise people:
 
 `PassManager` (`include/zl/mir/passes.hpp`) owns an ordered list of passes and
 runs them. Two kinds exist: `FunctionPass` (once per function — every
-optimisation here is one) and `ModulePass` (once per module — none ship today,
-because removing a function is not something this framework will do while
-reflection can reach it by name; the manager supports the kind so adding one
-later is not a restructuring).
+optimisation here but one is one) and `ModulePass` (once per module). One
+module pass ships: `eliminate-dead-functions`, which removes functions — the
+one rewrite whose correctness argument needs the whole module, because it
+counts what *nothing* in the module can reach. It only acts when the
+reachability report proves the call graph closed (see "Function removal"
+below), and the final whole-module verification is its backstop: a module
+pass that could not explain every reference it moved fails the pipeline
+rather than reaching a backend.
 
 The pipeline runs to a fixpoint: it repeats until an iteration changes nothing,
 or `OptimizationOptions::maxIterations` is reached. It has to repeat, because
@@ -150,18 +154,27 @@ curated ordering lives in exactly one place.
 ### Ordering, and why
 
 ```text
-1. simplify-branches         decided branches, cheapest first
-2. eliminate-dead-blocks     prune what (1) stranded
-3. fold-constants            intern the constants; the analysis only reports
+1. eliminate-dead-functions  module-wide, before anything per-function: a
+                             function that cannot run needs no pass run over
+                             it, and removing it shrinks what every later
+                             pass — and the final verification — walks
+2. simplify-branches         decided branches, cheapest first
+3. eliminate-dead-blocks     prune what (2) stranded
+4. fold-constants            intern the constants; the analysis only reports
                              constants the pool already has
-4. propagate-constants       carry them across blocks and through phis
-5. simplify-algebraic        identities whose operands only just became 0 or 1
-6. remove-redundant-conversions
+5. propagate-constants       carry them across blocks and through phis
+6. simplify-algebraic        identities whose operands only just became 0 or 1
+7. remove-redundant-conversions
                              conversions that stopped converting
-7. propagate-copies          (5) and (6) leave copies behind; dissolve them
-8. eliminate-dead-values     everything above replaces *uses*; this removes
+8. propagate-copies          (6) and (7) leave copies behind; dissolve them
+9. eliminate-dead-values     everything above replaces *uses*; this removes
                              the definitions that are now unread
 ```
+
+The iteration matters for (1) in both directions: later passes can strand a
+function that was live on the way in (their leftovers are gone next round), and
+a pass that deletes a function's only unpinned `call_indirect` can turn a
+declined removal into a licensed one.
 
 ### Analysis manager
 
@@ -215,6 +228,7 @@ snapshot files and by anything else that needs to show what changed.
 
 | Pass | What it does | What it refuses |
 | --- | --- | --- |
+| `eliminate-dead-functions` | deletes functions the reachability report proves unreachable; renumbers the survivors and rewrites every function id the removal moves (`entryPoint`, static initializers, call targets) | every module whose report is not `complete()` — no entry point, a reachable reflection native, or an unpinned function-value call; and any reference it cannot explain — then the module is untouched |
 | `simplify-branches` | a branch or switch on a constant becomes a jump; a branch whose arms agree becomes a jump; a jump through an empty block is threaded | a branch whose arms pass different block arguments; a block with parameters, instructions or a handler chain |
 | `eliminate-dead-blocks` | removes blocks no edge can enter, counting exception edges — a catch block is live even though nothing falls through to it | — |
 | `fold-constants` | evaluates an instruction whose operands are all constants and rewrites the uses of its result | overflow, division/modulo by zero, out-of-range shifts, mixed operand kinds, a result whose type disagrees |
@@ -239,6 +253,83 @@ looks dead ("nothing reads this slot again") is the thing that makes
 `examples/intermediate/Closures.zl`, and both the unit and the pipeline
 regressions now pin it.
 
+### Function removal
+
+`eliminate-dead-functions` is the only place in the optimiser that deletes a
+*function*, and the correctness argument is short because it delegates its one
+non-trivial step:
+
+> The pass removes a function only when the module's reachability report is
+> `complete()`: an entry point exists, no reachable function touches a native
+> of the reflection family, and every reachable call through a function value
+> is pinned to a single closure body. Under those conditions the reachable set
+> is closed under every way MIR records - or the backend materialises - that
+> execution can transfer, so a function outside it has no way to be entered,
+> invoked, dispatched to, reflected upon, or handed as a value to code that
+> calls it.
+
+Each clause of `complete()` earns its place:
+
+* **Entry point.** Without one the module is a library, and its callers are
+  outside the analysis's view; "unreachable" functions of a library are its
+  API.
+* **Reflection natives — the whole family, not only the invoke forms.**
+  `Type.methods()` and its siblings hand the program *the function table
+  itself* as data, and the bytecode chunk's runtime-type method metadata is
+  built from exactly the module's function list: a program that only ever
+  enumerates metadata never calls anything it could not have called before,
+  yet its printed output changes when a function is deleted. Metadata a
+  program prints *is* program output, so a module that reaches any
+  reflection native keeps every function it has. That is the price of the
+  boundary being honest rather than plausible, and `nativeIsReflective` in
+  the catalog is the one list the analysis and the removal both consult -
+  neither can drift from what a native does.
+* **Function values.** A `call_indirect` whose target is *proven* — a single
+  SSA definition, or a slot with exactly one store — to be one
+  `make_closure` body is an ordinary edge: that body is live, and anything
+  else can still go. A value the analysis cannot pin means some function the
+  caller chose may run, and the module keeps everything it has.
+* **Static initializers are kept whether or not anything reads them.** Here
+  the pass deliberately removes less than the report licenses: reflection
+  can read `Class.field` by name, and reading a lazy static runs its
+  initializer, so "nobody references this static" is not "nobody can run
+  its function." A function that only a kept initializer calls is kept too:
+  the pass closes the keep set over every callee reference found in any kept
+  body, whatever opcode carries it, rather than trusting any enumeration of
+  edge kinds.
+* **The backend's own dispatches.** Three MIR instructions name no callee
+  yet translate into virtual calls in the bytecode backend: `shared_get`,
+  `shared_set` and `Shared.withLock` dispatch the matching `Shared` method;
+  growing a `List`/`Set`/`Map` literal is `push`/`add`/`put` on the
+  class-layer collection; and the literal's construction is that class's
+  empty constructor. `backend_edges.hpp` is the single source for those
+  edges — the backend emits through it and the analysis keeps through it.
+  A dispatch site the analysis resolves to no candidate, with the name-based
+  fallback empty too, makes the report incomplete: a site whose resolution
+  the backend would later *refuse* must not look to a removal pass like an
+  absence of edges. (This is the same token rule the backend matches by —
+  the bare method name from `simpleName`, not the class-qualified declared
+  name; the first version of the analysis compared the two spellings, kept
+  nothing, and the corpus differential caught it as a stubbed `main`.)
+
+Removal is licensed by `complete()`; everything after that is bookkeeping the
+verifier can check: survivors are compacted in place and renumbered, every
+`CallTarget::function`, `Module::entryPoint` and `StaticField::initializer` is
+rewritten through the computed old→new map, and any reference the keep set
+cannot explain makes the pass commit *nothing* and say so. Deleted functions'
+bodies also leave the emitted chunk, which is the entire observable change.
+
+Measured with `--artifact-stats` on the benchmark corpus — every example plus
+`benchmarks/AllocationBenchmark.zl`, 54 programs, pass on vs the same default
+pipeline minus this pass: instruction bytes 17.5 MB → 3.3 MB (**−81.3%**),
+chunk function entries 16,399 → 2,996 (−81.7%), the `AllocationBenchmark` and
+native `Benchmark` pair alone −92.9% (785,760 → 55,680 bytes). The
+optimisation stage itself costs a fifth of what it did (3.07 s → 0.62 s in
+total across the corpus) because most of its work had been spent on functions
+that could not run. Programs where nothing is licensed to go are unchanged,
+by design: `Reflection.zl` at the reflection gate, `Lambdas.zl` and
+`Generics.zl` with everything live.
+
 ---
 
 ## What is deliberately not done
@@ -249,7 +340,9 @@ Stated so the absence is a decision rather than an oversight:
   the slot is read nowhere in the function at all. Removing one whose value is
   read on some other path needs an inter-block reaching-definition proof this
   framework does not claim to have.
-* **no function removal**, ever — reflection reaches functions by name.
+* **no function removal from a function pass.** A function-local pass cannot
+  see the references that would keep a function alive, so the decision lives
+  in one module pass, licensed by one report — see "Function removal" above.
 * **no inlining, no loop transformation, no vectorisation, no CSE across
   volatile reads, no global value numbering.** Each needs an analysis this
   layer does not have yet, and each can be added as a pass without touching the
@@ -257,8 +350,10 @@ Stated so the absence is a decision rather than an oversight:
 * **no reordering of any kind**, which is why evaluation order, exception
   order and synchronization order are preserved by construction rather than by
   argument.
-* **no module-level (inter-procedural) transform.** `ModulePass` exists; none
-  ship.
+* **no other module-level transform.** One module pass ships, for one decision
+  with one proof (above). Inlining, SCC-based specialisation and call-graph
+  rewrites each need a comparable argument before they earn the module pass
+  slot; none has one yet.
 
 ---
 
@@ -273,8 +368,15 @@ different. So the optimiser is checked twice.
 `include/zl/mir/differential.hpp` compares the unoptimised and optimised
 modules and reports any difference it can see:
 
-* **structure** — the same functions in the same order with the same
-  signatures, the same classes and statics, the same entry point;
+* **structure** — the optimised module's functions must pair with the
+  original's *by name*, in order, with the same signatures; the entry point
+  must still name the same function (ids may shift, so it is compared by
+  name, and renumbering by `eliminate-dead-functions` is invisible to this
+  check exactly as long as survivors keep their identity). The pairing is a
+  subsequence test: functions may go missing — whether *that* removal was
+  licensed is the reachability report's question, and the pipeline's final
+  verification confirms no survivor still names a removed one — but nothing
+  may be added, moved or renamed; the same classes, statics and counts;
 * **no growth** — optimisation may not make the program bigger;
 * **no observable event invented** — the optimised module may delete, never
   create. Unconditional, because it is the one thing that is never legitimate;
@@ -319,8 +421,10 @@ statistic. The same check runs inside
 `tests/mir_opt_pipeline_tests.cpp`, where the VM's output is captured and
 compared in-process.
 
-Current state: **50 of 50 example programs identical**, 0 skipped — the 9 files
-under an `examples/*/_lib/` directory are importable module sources rather than
+Current state: **52 of 52 example programs identical**, 0 skipped — run after
+the module pass joined the default pipeline, so it is also the runtime proof
+that function removal changes nothing a program can observe. The files under
+an `examples/*/_lib/` directory are importable module sources rather than
 runnable programs and are not counted.
 
 ### Across the whole corpus: `tools/mir_opt_check_all.sh`

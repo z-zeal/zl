@@ -81,7 +81,60 @@ The ownership-aware FFI foundation provides opaque handles, borrowed buffers and
 views, callback lifetime contracts, native resource adapters, dynamic library loading,
 and validated `@ffi(symbol)` / `@ffi(library, symbol)` metadata.
 
-Typed field-by-field C struct schemas remain a later ABI extension.
+### Callback quiescence and ownership (stabilization audit, closed 2026-09-20)
+
+The P1-10 question was what stops an *external* thread from calling back into a ZL
+callback whose context is going away, and who owns what crosses the boundary on the
+way out. The answers are mechanical, and each is pinned:
+
+- A callback value is a token into a process-local registry; it never crosses the
+  ABI as a raw pointer (`ZL_NATIVE_CALLBACK`, `include/zl/compiler/native_abi.hpp`).
+  Every invocation looks the token up before dispatching - an unknown or evicted id
+  is a boundary error, not a call through stale memory.
+- Each registry entry couples its invoke target to a **lifetime**: in-flight callers
+  hold leases, `close()` refuses new leases and waits for the running ones to drain,
+  and the entry is erased only after that. So "quiescence" is not a convention the
+  host must remember; a callback cannot fire into an expired context. Pinned by
+  `tests/native_ffi_lifetime_adapter_tests.cpp` (ctest `zl-native-ffi-lifetime-tests`:
+  open/close transitions, close-waits-for-in-flight, move-only lease RAII,
+  lease-on-closed throws, registry coupling, concurrent lease counting).
+- Re-entry itself participates in the GC stop protocol like any native wait
+  (`VM::BlockingNativeCall`), and a callback that throws restores the caller's
+  execution/handler state - the pinned continuation case is
+  `examples/advanced/MutexLocks.zl`; `GenericRuntimeChecks.zl` covers async
+  callback frames and `share`-factory metadata.
+- Outbound ownership is transport-enforced: an export declared to return an owned
+  handle must return an id the registry knows (`native_boundary.cpp` rejects an
+  unregistered owned return), so the runtime owns what a token refers to on both
+  directions.
+
+### No GC-path finalizers for native resources (same audit)
+
+"Blocking finalizers during collection" cannot occur for native resources because
+there is no GC-path finalization at all: the `NativeResourceRegistry` is consulted
+only by the explicit boundary (`contains` for validation, `consume` when an
+OWNED/CONSUMED argument transfers the handle into an export exactly once). The
+collector never sweeps handles. The trade is accepted and stated: a handle that is
+dropped without a consuming call leaks its resource - leaking is fail-open on
+memory, and the alternative (implicit destructors run at collection time) is what
+would put arbitrary blocking host code inside the stop-the-world protocol. Borrowed
+views have no finalization need: the ABI contract is that the pointer is valid only
+for the duration of the synchronous call, so nothing borrow-shaped outlives one to
+be finalized.
+
+
+For plain-data C structs, `zl-bind` emits a typed field-by-field schema: each
+`struct` whose members are all scalar (fixed-width integers, `double`/`float`,
+`bool`) gets zero-initialized storage behind an opaque handle, one typed
+get/set binding pair per field (`<Ns>.<Struct>_get_<field>`,
+`<Ns>.<Struct>_set_<field>`), layout queries (`<Ns>.<Struct>_size`,
+`<Ns>.<Struct>_offset_<field>`), and a C++ schema table whose `offsetof`/
+`sizeof` entries are evaluated by the target compiler under `static_assert`
+guards. The generated ZL facade exposes each field as a typed method pair
+(`field()` / `set_field(v)`). Structs with pointer, array or non-scalar
+fields, or with no fields at all, are refused at generation time rather than
+bound opaquely; the raw-buffer FFI path above remains the escape hatch for
+layouts this schema does not describe.
 
 ## Native export registry
 
