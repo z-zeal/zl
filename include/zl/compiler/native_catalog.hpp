@@ -318,16 +318,22 @@ struct NativeSignature {
 [[nodiscard]] const std::vector<NativeSignature>& nativeSignatureTable();
 [[nodiscard]] std::optional<const NativeSignature*> findNativeSignature(const std::string& qualifiedName);
 
-// True when calling this native can enter ZL code that the call site does not
-// name. Reflection's invoke family takes a `Method`/`Function`/`Constructor`
-// value and calls whatever it describes, so it is an edge to every function the
-// runtime can reach - which is a fact about the native, and therefore belongs
-// here rather than in a caller's hand-written list that can drift from the
-// catalog.
+// True for the reflection family: natives whose meaning is a program's
+// function table. The invoke forms take a `Method`/`Function`/`Constructor`
+// value and call whatever it describes - an edge to every function the runtime
+// can name. The enumeration forms (`Type.methods()`, `Type.fields()`, the
+// descriptor readers, function lookup by name) return that table as data.
+// Both families get the same answer because both make the function table load
+// bearing: metadata a program prints *is* program output, so a function
+// deleted from the table changes what the program reports about itself even
+// when nothing ever calls it. This is a fact about the native, and therefore
+// belongs here rather than in a caller's hand-written list that can drift
+// from the catalog.
 //
-// A caller reasoning about "what can this program run" (the native tier's
-// reachability report, and any future dead-code elimination) must treat a
-// module that calls one of these as having no closed call graph.
-[[nodiscard]] bool nativeEntersCodeByName(NativeId id) noexcept;
+// A caller reasoning about "what functions can this program run, or talk
+// about" (the reachability report, whole-module dead-function elimination)
+// must treat a module that reaches one of these as having no closed call
+// graph and an observable function table.
+[[nodiscard]] bool nativeIsReflective(NativeId id) noexcept;
 
 } // namespace zl

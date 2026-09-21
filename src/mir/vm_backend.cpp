@@ -6,6 +6,7 @@
 #include <sstream>
 #include <unordered_set>
 
+#include "zl/mir/backend_edges.hpp"
 #include "zl/vm/value.hpp"
 #include "zl/vm/native.hpp"
 #include "zl/vm/runtime_type.hpp"
@@ -1060,13 +1061,12 @@ private:
                                        : 0);
                 return;
             case Opcode::SharedGet:
-                emitSharedMethod(fn, ins, body, "get");
-                return;
             case Opcode::SharedSet:
-                emitSharedMethod(fn, ins, body, "setValue");
-                return;
             case Opcode::SharedWithLock:
-                emitSharedMethod(fn, ins, body, "withLock");
+                // One table for all three: `sharedMethodFor` is the same list
+                // the reachability analysis consults, so the callee it keeps
+                // alive and the callee this emits cannot drift.
+                emitSharedMethod(fn, ins, body, sharedMethodFor(ins.opcode));
                 return;
             case Opcode::InvokeSuper: emitInvokeSuper(fn, ins, body); return;
             case Opcode::InvokeStatic: emitInvokeStatic(fn, ins, body); return;
@@ -1325,12 +1325,11 @@ private:
     // produces, or typed assignments, generic dispatch and reflection all see
     // an untyped raw list where the language promised a real object.
     std::string classCollectionBase(std::uint32_t typeId) const {
-        const Type* type = module_.types.find(typeId);
-        if (!type || type->kind != TypeKind::Object) return {};
-        const std::size_t angle = type->name.find('<');
-        const std::string base = angle == std::string::npos ? type->name : type->name.substr(0, angle);
-        if (base == "List" || base == "Map" || base == "Set") return base;
-        return {};
+        // Delegated: `backend_edges.hpp` holds the one copy of this mapping,
+        // shared with the reachability analysis that keeps its callees alive.
+        // Qualified to namespace scope so this member resolves to the free
+        // function rather than recursing into itself.
+        return ::zl::mir::classCollectionBase(module_.types, typeId);
     }
 
     void emitNewCollection(const Function& fn, const Instruction& ins, Body& body) {
@@ -1353,8 +1352,7 @@ private:
             const std::string concrete = module_.types.render(ins.resultType);
             const Function* ctor = nullptr;
             for (const Function& candidate : module_.functions) {
-                if (candidate.isConstructor && candidate.ownerClass == base &&
-                    candidate.parameters.size() == 1) { // `this` only
+                if (isCollectionConstructor(candidate, base)) { // `this` is the only parameter
                     ctor = &candidate;
                     break;
                 }
@@ -1426,7 +1424,7 @@ private:
             } else {
                 callArgs.push_back(ins.operands[2]); // value (the literal's growing index is append-only)
             }
-            const std::string method = base == "List" ? "push" : base == "Set" ? "add" : "put";
+            const std::string method = collectionAppendMethod(base);
             const std::size_t slot = resolveMethodSlot(base, method, callArgs, ins.location);
             for (const Operand& operand : callArgs) pushOperand(fn, operand, body, line);
             body.emit(OpCode::InvokeMethod, slot, line, callArgs.size() - 1); // operand2 = argument count

@@ -1,10 +1,10 @@
 // Dead-block elimination and dead-value elimination.
 //
-// These are the only passes in the framework that delete anything, and they are
-// the only ones for which "delete" has to be argued rather than assumed. Both
-// rest on the effect classification in `effects.hpp`: an instruction is removed
-// only when the classification says it does nothing but compute, and a block is
-// removed only when no edge - normal *or* unwind - can reach it.
+// These are the only passes in the framework that delete from a *function*,
+// and the only ones for which "delete" has to be argued rather than assumed.
+// Both rest on the effect classification in `effects.hpp`: an instruction is
+// removed only when the classification says it does nothing but compute, and a
+// block is removed only when no edge - normal *or* unwind - can reach it.
 //
 // Two things these passes deliberately do not do:
 //
@@ -13,9 +13,12 @@
 //     need an inter-block reaching-definition proof this framework does not
 //     claim to have, and an unproven one is a wrong value, not a missed
 //     optimisation;
-//   * no function is removed, ever. Reflection reaches functions by name, so
-//     "nobody calls this" is not something a module-local analysis can
-//     establish.
+//   * no function is removed. These passes are function-local, and "nobody
+//     calls this" is not something a function-local analysis can establish.
+//     Function removal is the module pass `eliminate-dead-functions`
+//     (opt_dead_functions.cpp), which performs it only under the reachability
+//     report's completeness proof - reflection and unpinned function values
+//     included - and never from inside a function pass.
 
 #include <algorithm>
 #include <cstddef>

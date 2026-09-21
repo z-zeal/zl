@@ -1,0 +1,71 @@
+// ============================================================================
+// Regression fixture - valid/concurrency_regressions - SharedLockThrowRelease
+//
+// P1-10 (remaining exception/Shared audit): `Shared<T>.withLock` guards the
+// cell with an RAII lock held across the closure invocation, so a throwing
+// body must unwind through the unlock exactly once - the exception surfaces
+// once at the caller's handler, and the cell stays usable. The `Mutex`
+// variant has carried this pin since the O5 fix (`MutexLocks.zl`); the cell
+// variant is the one programs actually use through the dispatch the backend
+// materialises (`Shared.withLock`), and nothing pinned its throw path before
+// this fixture. Every re-lock below would hang, not throw, if the unlock
+// leaked.
+// ============================================================================
+
+class SharedLockThrowRelease {
+    func main(): void {
+        var cell = new Shared<int>(1)
+        var outcome = "completed"
+        try {
+            cell.withLock(func(): int {
+                var x = 0
+                if (x == 0) { throw new Exception("inside the lock") }
+                return x
+            })
+        } catch Exception e {
+            outcome = "caught"
+        }
+        if (outcome != "caught") {
+            throw new Exception("SharedLockThrowRelease: the body's exception did not surface at the caller")
+        }
+
+        // The same handler then sees a normal section: no duplicate delivery,
+        // no poisoned state.
+        cell.withLock(func(): int {
+            cell.setValue(cell.get() + 41)
+            return 0
+        })
+        if (cell.get() != 42) {
+            throw new Exception("SharedLockThrowRelease: the update after the throwing section was lost")
+        }
+
+        // Two throws in sequence unwind the same way; the cell is neither
+        // double-released nor stuck.
+        var caught = 0
+        var i = 0
+        while (i < 2) {
+            try {
+                cell.withLock(func(): int {
+                    var y = 0
+                    if (y == 0) { throw new Exception("again") }
+                    return y
+                })
+            } catch Exception e {
+                caught = caught + 1
+            }
+            i = i + 1
+        }
+        if (caught != 2) {
+            throw new Exception("SharedLockThrowRelease: expected two catches, saw " + caught)
+        }
+        cell.withLock(func(): int {
+            cell.setValue(cell.get() * 2)
+            return 0
+        })
+        if (cell.get() != 84) {
+            throw new Exception("SharedLockThrowRelease: cell is stuck after the second throw")
+        }
+
+        log("ok")
+    }
+}

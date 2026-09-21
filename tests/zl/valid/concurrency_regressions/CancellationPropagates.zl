@@ -1,0 +1,125 @@
+
+// ============================================================================
+// Regression fixture - valid/concurrency_regressions - CancellationPropagates
+//
+// P1-7 (cancellation propagation): `Task.cancel()` used to stop at the task
+// it was called on. An async body that had already spawned work - called
+// another async func and held its Task - left that work running to
+// completion: the child burned its full iteration budget, and its result (or
+// failure) went unobserved forever.
+//
+// The runtime now records a spawn edge for every task created while a task
+// body runs, and a cancellation request - cooperative, observed at the next
+// suspension point - cascades parent-first along those edges. This fixture
+// pins the cascade three deep (main task -> parent -> child -> grandchild):
+// cancelling the parent must stop all three, and "stop" here means the
+// counter each of them drives settles below its total - the work is not
+// completed and quietly discarded, it does not happen at all.
+//
+// The timing bounds are deliberately loose: the whole fixture passes even if
+// the machine is too slow to start a body before the cancel lands (every
+// count is 0 and everything has settled); what it cannot tolerate is a
+// cascade that never arrives, because 800 iterations x 2 ms of sleep is
+// orders of magnitude longer than the cancellation window.
+// ============================================================================
+
+class CancellationPropagates {
+    public Shared<int> parentCount
+    public Shared<int> childCount
+    public Shared<int> grandCount
+
+    func CancellationPropagates(): void {
+        this.parentCount = new Shared<int>(0)
+        this.childCount = new Shared<int>(0)
+        this.grandCount = new Shared<int>(0)
+    }
+
+    public async func grind(Shared<int> counter): int {
+        var i = 0
+        while (i < 800) {
+            await Time.sleepAsync(0.002)
+            counter.setValue(counter.get() + 1)
+            i = i + 1
+        }
+        return i
+    }
+
+    public async func parent(): int {
+        // Spawns both children from the parent's body: they must join the
+        // parent's cancellation cascade even though the parent only awaits
+        // the first.
+        var grand = this.grind(this.grandCount)
+        var child = this.child(grand)
+        return await child
+    }
+
+    public async func child(Task<int> grand): int {
+        var inner = await grand
+        return inner
+    }
+
+    public async func main(): void {
+        var self = new CancellationPropagates()
+        var total = 800
+
+        // ---- a cancelled parent stops the tasks it spawned -----------------
+        var running = self.parent()
+        await Time.sleepAsync(0.05) // let the bodies start and make progress
+        running.cancel()
+        var surfaced = "unobserved"
+        try {
+            await running
+            surfaced = "completed"
+        } catch e {
+            surfaced = "cancelled"
+        }
+        if (surfaced != "cancelled") {
+            throw new Exception("CancellationPropagates: cancelling the parent task did not surface as a cancellation (outcome: " + surfaced + ")")
+        }
+
+        // The children had no handle left in main after the parent died - the
+        // only view on them is the counters they drive. Settle, then require
+        // both stopped growing and stopped early.
+        await Time.sleepAsync(0.05)
+        var p1 = self.parentCount.get()
+        var c1 = self.childCount.get()
+        var g1 = self.grandCount.get()
+        await Time.sleepAsync(0.03)
+        var p2 = self.parentCount.get()
+        var c2 = self.childCount.get()
+        var g2 = self.grandCount.get()
+        if (p1 != p2 || c1 != c2 || g1 != g2) {
+            throw new Exception("CancellationPropagates: a task kept running after its parent was cancelled")
+        }
+        if (p2 >= total || c2 >= total || g2 >= total) {
+            throw new Exception("CancellationPropagates: a spawned task ran its full budget despite the cascade")
+        }
+
+        // ---- cancelling a pending task leaves nothing to cascade to --------
+        var notStarted = self.grind(self.parentCount)
+        notStarted.cancel()
+        var outcome = "unobserved"
+        try {
+            await notStarted
+            outcome = "completed"
+        } catch e {
+            outcome = "cancelled"
+        }
+        if (outcome != "cancelled") {
+            throw new Exception("CancellationPropagates: a cancel of a pending task must end it cancelled")
+        }
+
+        // ---- an uncancelled sibling keeps running --------------------------
+        // The cascade is a spawn edge, not a broadcast: while one parent is
+        // cancelled, another task's work must be untouched.
+        var keepAlive = self.grind(self.childCount)
+        var doomed = self.grind(self.parentCount)
+        await Time.sleepAsync(0.02)
+        doomed.cancel()
+        var kept = await keepAlive
+        if (kept < total) {
+            throw new Exception("CancellationPropagates: cancelling one task stopped an unrelated one")
+        }
+        log("CancellationPropagates ok")
+    }
+}

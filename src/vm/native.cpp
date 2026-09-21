@@ -1922,15 +1922,40 @@ Value taskSpawn(const std::vector<Value>& args) {
     if (!capturesAreExplicitlyShared(c)) throw std::runtime_error("Task.spawn: captured values must be Shared<T> when crossing CPU workers");
 
     auto task = std::make_shared<RuntimeTaskState>(c.returnTypeName.empty() ? "void" : c.returnTypeName);
+    // A CPU task spawned from a task body joins that task's cancellation
+    // cascade (a spawn from an ordinary synchronous frame has no parent).
+    if (RuntimeTaskState* parent = gCurrentSpawningTask) parent->addSpawnedChild(task);
     const auto closureCopy = *closure;
     auto root = std::make_shared<ProtectedGCRoot>(closureCopy.get());
     RuntimeTaskExecutor::instance().enqueue([task, closureCopy, root]() mutable {
         std::unique_ptr<VM> workerVm;
         try {
+            // Cooperative cancellation: a spawn cancelled before its worker
+            // started never runs the closure at all. (A Pending task cancelled
+            // outright is already terminal and skipped for the same reason.)
+            if (task->isTerminal() || task->cancellationRequested()) {
+                if (!task->isTerminal()) {
+                    try { task->cancel(); } catch (const std::logic_error&) {}
+                }
+                return;
+            }
             workerVm = std::make_unique<VM>();
             task->start();
-            Value result = workerVm->invokeTaskClosure(closureCopy);
-            task->succeed(std::move(result));
+            Value result;
+            {
+                // The closure body may itself spawn tasks; they belong to this
+                // task's cancellation cascade, so mark it as the spawning task.
+                CurrentSpawningTaskGuard spawnGuard{task.get()};
+                result = workerVm->invokeTaskClosure(closureCopy);
+            }
+            if (task->cancellationRequested()) {
+                // Cancelled while running: a synchronous closure has no
+                // suspension point to notice at, so its completion settles as
+                // cancelled rather than delivering a result nobody will read.
+                try { task->cancel(); } catch (const std::logic_error&) {}
+            } else {
+                task->succeed(std::move(result));
+            }
         } catch (...) {
             try { task->fail(std::current_exception()); } catch (const std::logic_error&) {}
         }

@@ -14,6 +14,7 @@
 //      catches an optimisation that changes what the program observes.
 
 #include "zl/mir/builder.hpp"
+#include "zl/compiler/native_catalog.hpp"
 #include "zl/mir/differential.hpp"
 #include "zl/mir/effects.hpp"
 #include "zl/mir/folding.hpp"
@@ -752,18 +753,430 @@ public:
     }
 };
 
+// ---------------------------------------------------------------------------
+// eliminate-dead-functions: the module pass
+// ---------------------------------------------------------------------------
+//
+// The removal license and the refusal states, on hand-built modules so the
+// keep-set is visible rather than implied: what the reachability report
+// proves unreachable goes, and everything the report cannot prove lives -
+// static initializers included.
+
+// Runs one module pass with a fresh analysis manager, the way the pipeline
+// does between iterations.
+bool runModulePass(Module& module, ModulePass& pass) {
+    FunctionAnalysisManager analyses(module);
+    return pass.runOnModule(module, analyses);
+}
+
+[[nodiscard]] bool hasName(const Module& module, const std::string& name) {
+    return std::any_of(module.functions.begin(), module.functions.end(),
+                       [&](const Function& function) { return function.name == name; });
+}
+
+[[nodiscard]] const Instruction* firstCallIn(const Module& module, const char* functionName) {
+    for (const Function& function : module.functions) {
+        if (function.name != functionName) continue;
+        for (const BasicBlock& block : function.blocks)
+            for (const Instruction& instruction : block.instructions)
+                if (instruction.opcode == Opcode::Call) return &instruction;
+    }
+    return nullptr;
+}
+
+// Dead code first and last, so removal has to renumber across the survivors:
+// `orphan` precedes `main` (moving the entry point down), `used` follows the
+// dead chain (moving a call target up).
+Module buildDeadFunctionProgram() {
+    ModuleBuilder builder("dead-functions");
+    TypeArena& types = builder.types();
+    const auto voidFunction = [&builder, &types](const char* name) {
+        FunctionBuilder fb = builder.addFunction(name);
+        fb.setReturnType(types.voidType());
+        const BlockId entry = fb.addBlock();
+        fb.setCurrentBlock(entry);
+        return fb;
+    };
+
+    FunctionBuilder orphan = voidFunction("Dead.orphan()");
+    orphan.emitLog(Operand::constant(builder.constantString("orphan"), types.stringType()));
+    orphan.emitReturn();
+    orphan.finish();
+
+    FunctionBuilder main = voidFunction("Dead.main()");
+    const FunctionId usedId = static_cast<FunctionId>(builder.functionCount() + 3); // dead, deep, then used
+    main.emitCall(usedId, {}, 0);
+    main.emitReturn();
+    main.finish();
+    const FunctionId mainId = main.function().id;
+
+    FunctionBuilder dead = voidFunction("Dead.dead()");
+    const FunctionId deepId = static_cast<FunctionId>(builder.functionCount() + 1);
+    dead.emitCall(deepId, {}, 0);
+    dead.emitReturn();
+    dead.finish();
+
+    FunctionBuilder deep = voidFunction("Dead.deep()");
+    deep.emitLog(Operand::constant(builder.constantString("deep"), types.stringType()));
+    deep.emitReturn();
+    deep.finish();
+
+    FunctionBuilder used = voidFunction("Dead.used()");
+    used.emitLog(Operand::constant(builder.constantString("used"), types.stringType()));
+    used.emitReturn();
+    used.finish();
+
+    builder.setEntryPoint(mainId);
+    return builder.take();
+}
+
+void testEliminateDeadFunctionsRemovesAndRenumbers() {
+    Module module = buildDeadFunctionProgram();
+    require(module.functions.size() == 5, "the program has two live functions and three dead ones");
+
+    auto base = createEliminateDeadFunctionsPass();
+    auto* pass = static_cast<ModulePass*>(base.get());
+    require(pass->isModulePass(), "eliminate-dead-functions is a module pass");
+    require(runModulePass(module, *pass), "the pass reports a change");
+
+    require(module.functions.size() == 2, "only main and the helper it calls survive");
+    require(hasName(module, "Dead.main()") && hasName(module, "Dead.used()"), "and they are exactly those");
+    require(!hasName(module, "Dead.orphan()") && !hasName(module, "Dead.dead()") &&
+                !hasName(module, "Dead.deep()"),
+            "the whole dead chain - including a function only another dead one calls - is gone");
+    require(module.functions[0].id == 1 && module.functions[1].id == 2,
+            "survivors are renumbered to their positions, as the module requires");
+    require(module.entryPoint == 1, "the entry point follows the renumbering");
+
+    const Instruction* call = firstCallIn(module, "Dead.main()");
+    require(call != nullptr && call->target.function == 2, "the call site follows its callee to the new id");
+
+    const VerificationReport verification = verifyModule(module);
+    require(verification.ok(), "the renumbered module verifies: " + verification.describe());
+
+    require(!runModulePass(module, *pass), "a second run changes nothing");
+    require(pass->lastNote().find("every one is reachable") != std::string::npos,
+            "and says why: " + pass->lastNote());
+}
+
+void testEliminateDeadFunctionsRefusesAnOpenGraph() {
+    // (a) Reflection enumeration. Not the invoke family: merely printing
+    // `Type.methods()` reads the function table, so the table is program
+    // output and nothing may be removed from it.
+    {
+        ModuleBuilder builder("dfe-reflect");
+        TypeArena& types = builder.types();
+        FunctionBuilder main = builder.addFunction("Reflect.main()");
+        main.setReturnType(types.voidType());
+        const BlockId entry = main.addBlock();
+        main.setCurrentBlock(entry);
+        main.emitCallNative("Type.methods", static_cast<std::int32_t>(zl::NativeId::REFLECTION_METHODS), {}, 0);
+        main.emitReturn();
+        main.finish();
+        const FunctionId mainId = main.function().id;
+        FunctionBuilder dead = builder.addFunction("Reflect.unused()");
+        dead.setReturnType(types.voidType());
+        const BlockId deadEntry = dead.addBlock();
+        dead.setCurrentBlock(deadEntry);
+        dead.emitReturn();
+        dead.finish();
+        builder.setEntryPoint(mainId);
+
+        Module module = builder.take();
+        auto base = createEliminateDeadFunctionsPass();
+        auto* pass = static_cast<ModulePass*>(base.get());
+        require(!runModulePass(module, *pass), "a reflective enumeration declines removal");
+        require(module.functions.size() == 2, "so nothing is removed");
+        require(pass->lastNote().find("reads or enters code by name") != std::string::npos,
+                "and the note says which native opened the graph: " + pass->lastNote());
+    }
+
+    // (b) An unpinned function value: main calls a function it received, and
+    // the analysis cannot say whose body runs.
+    {
+        ModuleBuilder builder("dfe-indirect");
+        TypeArena& types = builder.types();
+        FunctionBuilder main = builder.addFunction("Indirect.main()");
+        main.setReturnType(types.voidType());
+        const ParamId callback = main.addParameter("callback", types.unknownType());
+        const BlockId entry = main.addBlock();
+        main.setCurrentBlock(entry);
+        main.emitCallIndirect(main.parameterOperand(callback), {}, 0);
+        main.emitReturn();
+        main.finish();
+        const FunctionId mainId = main.function().id;
+        FunctionBuilder dead = builder.addFunction("Indirect.unused()");
+        dead.setReturnType(types.voidType());
+        const BlockId deadEntry = dead.addBlock();
+        dead.setCurrentBlock(deadEntry);
+        dead.emitReturn();
+        dead.finish();
+        builder.setEntryPoint(mainId);
+
+        Module module = builder.take();
+        auto base = createEliminateDeadFunctionsPass();
+        auto* pass = static_cast<ModulePass*>(base.get());
+        require(!runModulePass(module, *pass), "an unpinned function value declines removal");
+        require(module.functions.size() == 2, "so nothing is removed");
+        require(pass->lastNote().find("unpinned function-value call") != std::string::npos,
+                "and the note names the open edge: " + pass->lastNote());
+    }
+
+    // (c) No entry point at all: a library module's functions are the API,
+    // not dead weight.
+    {
+        ModuleBuilder builder("dfe-library");
+        TypeArena& types = builder.types();
+        FunctionBuilder helper = builder.addFunction("Library.helper()");
+        helper.setReturnType(types.voidType());
+        const BlockId entry = helper.addBlock();
+        helper.setCurrentBlock(entry);
+        helper.emitReturn();
+        helper.finish();
+        Module module = builder.take();
+
+        auto base = createEliminateDeadFunctionsPass();
+        auto* pass = static_cast<ModulePass*>(base.get());
+        require(!runModulePass(module, *pass), "a module without an entry point keeps everything");
+        require(pass->lastNote().find("no entry point") != std::string::npos,
+                "and says so: " + pass->lastNote());
+    }
+}
+
+void testEliminateDeadFunctionsKeepsWhatTheBackendDispatchesByName() {
+    // Virtual dispatch: every override anywhere under the receiver's static
+    // type stays live, because the slot picked at runtime may name it.
+    {
+        ModuleBuilder builder("dfe-dispatch");
+        TypeArena& types = builder.types();
+        ClassLayout& shape = builder.addClassLayout("Shape");
+        (void)shape;
+        ClassLayout& square = builder.addClassLayout("Square");
+        square.parent = "Shape";
+
+        const std::uint32_t shapeType = types.objectType("Shape");
+        FunctionBuilder main = builder.addFunction("Shapes.main()");
+        main.setReturnType(types.voidType());
+        const BlockId entry = main.addBlock();
+        main.setCurrentBlock(entry);
+        const TempId receiver = main.emitAlloc("Shape", {}, shapeType);
+        main.emitInvokeMethod(Operand::temp(receiver, shapeType), "Shape", "area", {}, 0);
+        main.emitReturn();
+        main.finish();
+        const FunctionId mainId = main.function().id;
+
+        const auto method = [&builder, &types](const char* name) {
+            FunctionBuilder fb = builder.addFunction(name);
+            fb.setReturnType(types.voidType());
+            const BlockId block = fb.addBlock();
+            fb.setCurrentBlock(block);
+            fb.emitReturn();
+            fb.finish();
+        };
+        method("Shape.area()");
+        method("Square.area()");
+        method("Square.side()");
+        builder.setEntryPoint(mainId);
+
+        Module module = builder.take();
+        auto base = createEliminateDeadFunctionsPass();
+        require(runModulePass(module, *static_cast<ModulePass*>(base.get())), "the dispatch pair is kept, the orphan method removed");
+        require(hasName(module, "Shape.area()"), "the method the receiver's class declares");
+        require(hasName(module, "Square.area()"), "and every override under it - reachable through the slot");
+        require(!hasName(module, "Square.side()"), "a method no site dispatches to is gone");
+    }
+
+    // A shared-cell read is an `invoke_method` the *backend* creates: the
+    // `Shared.get` declaration must survive a function that only ever says
+    // `cell.get()`, even though no MIR call instruction names it.
+    {
+        ModuleBuilder builder("dfe-hidden");
+        TypeArena& types = builder.types();
+        ClassLayout& shared = builder.addClassLayout("Shared");
+        (void)shared;
+        const std::uint32_t sharedType = types.objectType("Shared");
+
+        FunctionBuilder main = builder.addFunction("Hidden.main()");
+        main.setReturnType(types.voidType());
+        const BlockId entry = main.addBlock();
+        main.setCurrentBlock(entry);
+        const TempId cell = main.emitAlloc("Shared", {}, sharedType);
+        main.emitSharedGet(Operand::temp(cell, sharedType), types.intType());
+        main.emitReturn();
+        main.finish();
+        const FunctionId mainId = main.function().id;
+
+        FunctionBuilder get = builder.addFunction("Shared.get()");
+        get.setReturnType(types.intType());
+        const BlockId getEntry = get.addBlock();
+        get.setCurrentBlock(getEntry);
+        get.emitReturn(Operand::constant(builder.constantInt(0), types.intType()));
+        get.finish();
+        FunctionBuilder unused = builder.addFunction("Shared.other()");
+        unused.setReturnType(types.voidType());
+        const BlockId otherEntry = unused.addBlock();
+        unused.setCurrentBlock(otherEntry);
+        unused.emitReturn();
+        unused.finish();
+        builder.setEntryPoint(mainId);
+
+        Module module = builder.take();
+        auto base = createEliminateDeadFunctionsPass();
+        (void)runModulePass(module, *static_cast<ModulePass*>(base.get()));
+        require(hasName(module, "Shared.get()"),
+                "the method the bytecode backend dispatches a shared_get to is never removed");
+        require(!hasName(module, "Shared.other()"), "and only that method - the rest still goes");
+    }
+}
+
+void testEliminateDeadFunctionsKeepsStaticInitializers() {
+    // A static nothing reads is still reachable *by name* through
+    // reflection, and reading it runs its initializer - so the initializer,
+    // and everything it calls, stays in the keep set.
+    ModuleBuilder builder("dfe-statics");
+    TypeArena& types = builder.types();
+
+    FunctionBuilder seed = builder.addFunction("Counter.seed()");
+    seed.setReturnType(types.intType());
+    const BlockId seedEntry = seed.addBlock();
+    seed.setCurrentBlock(seedEntry);
+    seed.emitReturn(Operand::constant(builder.constantInt(17), types.intType()));
+    const FunctionId seedId = seed.function().id;
+    seed.finish();
+
+    FunctionBuilder initializer = builder.addFunction("Counter.$init-total");
+    initializer.setReturnType(types.intType());
+    const BlockId initEntry = initializer.addBlock();
+    initializer.setCurrentBlock(initEntry);
+    initializer.emitCall(seedId, {}, types.intType());
+    initializer.emitReturn(Operand::constant(builder.constantInt(17), types.intType()));
+    const FunctionId initializerId = initializer.function().id;
+    initializer.finish();
+
+    FunctionBuilder main = builder.addFunction("Counter.main()");
+    main.setReturnType(types.voidType());
+    const BlockId entry = main.addBlock();
+    main.setCurrentBlock(entry);
+    main.emitLog(Operand::constant(builder.constantString("hi"), types.stringType()));
+    main.emitReturn();
+    const FunctionId mainId = main.function().id;
+    main.finish();
+
+    FunctionBuilder orphan = builder.addFunction("Counter.unused()");
+    orphan.setReturnType(types.voidType());
+    const BlockId orphanEntry = orphan.addBlock();
+    orphan.setCurrentBlock(orphanEntry);
+    orphan.emitReturn();
+    orphan.finish();
+
+    builder.setEntryPoint(mainId);
+    builder.addStatic("Counter", "total", types.intType(), initializerId);
+    Module module = builder.take();
+
+    auto base = createEliminateDeadFunctionsPass();
+    require(runModulePass(module, *static_cast<ModulePass*>(base.get())), "the orphan still goes");
+    require(hasName(module, "Counter.$init-total") && hasName(module, "Counter.seed()"),
+            "the static's initializer and what it calls stay, read or not");
+    require(module.statics.size() == 1 && module.statics[0].initializer != kNoFunction &&
+                module.function(module.statics[0].initializer) != nullptr,
+            "and the static's initializer reference stays resolvable");
+    require(!hasName(module, "Counter.unused()"), "unreachable free functions still go");
+}
+
+void testDifferentialToleratesLicensedRemovalButNotGrowth() {
+    const Module before = buildDeadFunctionProgram();
+    Module after = before;
+    std::string error;
+    PassManager manager = PassManager::namedPipeline("eliminate-dead-functions", error);
+    require(error.empty(), "eliminate-dead-functions is a registered pass name");
+    OptimizationOptions options;
+    options.verifyAtEnd = false;
+    (void)manager.run(after, options);
+    require(after.functions.size() == 2, "the reference pipeline and the module agree on the removals");
+
+    const DifferentialResult removal =
+        compareModules(before, after, DifferentialOptions{}.withReferencePipeline("eliminate-dead-functions"));
+    require(removal.equivalent, "removal under a complete report is not a divergence: " + removal.describe());
+    require(std::any_of(removal.notes.begin(), removal.notes.end(),
+                        [](const std::string& note) { return note.find("removed") != std::string::npos; }),
+            "and the removal is recorded in the notes, not hidden");
+
+    // The other directions stay errors, under the same name-pairing:
+    // adding, reordering and renaming are not removal.
+    {
+        Module grown = before;
+        grown.functions.push_back(grown.functions[0]); // any duplicate is an addition
+        grown.functions.back().name = "Dead.extra()";
+        grown.functions.back().id = static_cast<FunctionId>(grown.functions.size());
+        const DifferentialResult result = compareModules(before, grown, DifferentialOptions{});
+        require(!result.equivalent, "a function added by the optimiser is a mismatch");
+        require(std::any_of(result.mismatches.begin(), result.mismatches.end(),
+                            [](const DifferentialMismatch& m) {
+                                return m.detail.find("grew") != std::string::npos ||
+                                       m.detail.find("added") != std::string::npos;
+                            }),
+                "and it is named as growth or addition");
+    }
+    {
+        Module reordered = after;
+        std::swap(reordered.functions[0], reordered.functions[1]);
+        reordered.functions[0].id = 1;
+        reordered.functions[1].id = 2;
+        reordered.entryPoint = 2; // still names main, by the new position
+        const DifferentialResult result = compareModules(after, reordered, DifferentialOptions{});
+        require(!result.equivalent, "a survivor moved out of order is a mismatch");
+        require(std::any_of(result.mismatches.begin(), result.mismatches.end(),
+                            [](const DifferentialMismatch& m) {
+                                return m.detail.find("order") != std::string::npos ||
+                                       m.detail.find("entry point") != std::string::npos;
+                            }),
+                "named as ordering or entry-point damage");
+    }
+    {
+        Module renamed = after;
+        renamed.functions[1].name = "Dead.other()";
+        const DifferentialResult result = compareModules(after, renamed, DifferentialOptions{});
+        require(!result.equivalent, "a survivor renamed is a mismatch");
+        require(std::any_of(result.mismatches.begin(), result.mismatches.end(),
+                            [](const DifferentialMismatch& m) {
+                                return m.detail.find("added") != std::string::npos;
+                            }),
+                "reported as the pair of a removal and an addition");
+    }
+}
+
+void testDefaultPipelineShipsDeadFunctionElimination() {
+    // The licence for removal lives in the default pipeline, on its own,
+    // before the per-function passes get to work on functions that cannot
+    // run. Idempotence is part of the contract: the second iteration must
+    // find a closed graph and change nothing further.
+    Module module = buildDeadFunctionProgram();
+    const Module before = module;
+    const OptimizationReport report = optimizeModule(module);
+    require(report.changed(), "the default pipeline removed the dead chain");
+    require(module.functions.size() == 2, "leaving exactly the reachable pair");
+    require(report.rollbacks == 0, "with no rollback - a module pass either commits or stays out");
+    require(report.verifiedAtEnd && report.finalVerification.ok(), "and the renumbered module verifies");
+    require(report.instructionsRemoved() != 0, "the report counts the instructions that left with them");
+    const DifferentialResult differential = compareModules(before, module);
+    require(differential.equivalent, "against the same pipeline on the raw module: equivalent: " +
+                                         differential.describe());
+}
+
 void testPipelineOrderingAndRegistry() {
     registerBuiltinPasses();
     PassManager manager = PassManager::defaultPipeline();
-    require(manager.passes().size() == 8, "the default pipeline has eight passes");
+    require(manager.passes().size() == 9, "the default pipeline has nine passes");
     std::vector<std::string> names;
     for (const auto& pass : manager.passes()) names.push_back(pass->name());
     const std::vector<std::string> expected = {
-        "simplify-branches",   "eliminate-dead-blocks", "fold-constants",
-        "propagate-constants", "simplify-algebraic",    "remove-redundant-conversions",
-        "propagate-copies",    "eliminate-dead-values"};
+        "eliminate-dead-functions", "simplify-branches", "eliminate-dead-blocks", "fold-constants",
+        "propagate-constants", "simplify-algebraic",     "remove-redundant-conversions", "propagate-copies",
+        "eliminate-dead-values"};
     require(names == expected, "the pipeline order is the documented one");
-    require(manager.describePipeline().find("1. simplify-branches") == 0, "the pipeline describes itself");
+    require(manager.describePipeline().find("1. eliminate-dead-functions") == 0, "the pipeline describes itself");
+    require(PassRegistry::instance().has("eliminate-dead-functions"),
+            "and the module pass is addressable by name in a pipeline spec");
 
     std::string error;
     require(PassManager::namedPipeline("none", error).passes().empty(), "'none' is an empty pipeline");
@@ -1099,6 +1512,12 @@ int main() {
     testBranchSimplificationAndDeadBlocks();
     testDeadValueEliminationBoundaries();
     testDeadStoresSurviveInClosures();
+    testEliminateDeadFunctionsRemovesAndRenumbers();
+    testEliminateDeadFunctionsRefusesAnOpenGraph();
+    testEliminateDeadFunctionsKeepsWhatTheBackendDispatchesByName();
+    testEliminateDeadFunctionsKeepsStaticInitializers();
+    testDifferentialToleratesLicensedRemovalButNotGrowth();
+    testDefaultPipelineShipsDeadFunctionElimination();
     testPipelineOrderingAndRegistry();
     testVerificationBetweenPassesAndRollback();
     testAnalysisCaching();

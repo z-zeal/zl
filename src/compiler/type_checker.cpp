@@ -2960,7 +2960,8 @@ void TypeChecker::checkVarDecl(const VarDecl* node) {
         if (initType == ZlType::FUNCTION) {
             symbols_.defineVar(node->name, initType, node->isConst, initClassName,
                                initResult.functionParamTypes, initResult.functionReturnType,
-                               ZlType::UNKNOWN, "", std::nullopt, ZlType::UNKNOWN,
+                               initResult.taskValueType, initResult.taskValueClassName,
+                               std::nullopt, ZlType::UNKNOWN,
                                initResult.functionCaptureNames, initResult.functionUsesThis, initResult.functionHasSignature, inferredOwnership);
             symbols_.setFunctionSignature(node->name, initResult.functionParamClassNames,
                                            initResult.functionReturnClassName, initResult.functionIsAsync, initResult.functionHasSignature);
@@ -4977,7 +4978,24 @@ TypeChecker::InferredType TypeChecker::inferCall(const CallExpr* node) {
                     }
                 }
             }
-            return InferredType(localVar->functionReturnType, localVar->functionReturnClassName);
+            // A call through an async callable produces Task<T>; carry the T
+            // so `f(1).block().method()` type-checks like the named-method
+            // async path (which stores the task value type directly). Where
+            // the variable records no task metadata, decode the rendered
+            // `Task<...>` return name it does carry.
+            InferredType result(localVar->functionReturnType, localVar->functionReturnClassName);
+            if (result.type == ZlType::TASK) {
+                if (localVar->taskValueType != ZlType::UNKNOWN) {
+                    result.taskValueType = localVar->taskValueType;
+                    result.taskValueClassName = localVar->taskValueClassName;
+                } else if (!result.className.empty()) {
+                    const auto [taskName, valueName] = splitGenericName(result.className);
+                    const auto value = decodeRenderedType(valueName);
+                    result.taskValueType = value.type;
+                    result.taskValueClassName = value.className;
+                }
+            }
+            return result;
         }
     }
 

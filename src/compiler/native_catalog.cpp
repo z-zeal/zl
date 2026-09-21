@@ -324,15 +324,15 @@ findNativeSignature(const std::string& qualifiedName) {
 }
 
 
-bool nativeEntersCodeByName(NativeId id) noexcept {
-    switch (id) {
-        case NativeId::REFLECTION_FUNCTION_INVOKE:
-        case NativeId::REFLECTION_METHOD_INVOKE:
-        case NativeId::REFLECTION_CONSTRUCTOR_INVOKE:
-            return true;
-        default:
-            return false;
-    }
+bool nativeIsReflective(NativeId id) noexcept {
+    // The reflection family is contiguous in `NativeId` - every enumerator
+    // between REFLECTION_NAME and REFLECTION_CONSTRUCTOR_INVOKE reads,
+    // writes, or invokes the program's function table through a name or a
+    // descriptor value. New reflection natives join the family in place;
+    // anything outside it that starts inspecting the table (a plugin
+    // registry, say) extends both ends here, in the catalog, where the list
+    // of what each native does lives.
+    return id >= NativeId::REFLECTION_NAME && id <= NativeId::REFLECTION_CONSTRUCTOR_INVOKE;
 }
 
 std::unordered_map<std::string, std::string> nativeTypeBindings(const NativeSignature& signature,

@@ -191,9 +191,12 @@ strategies (memory domains: arena, pool, user-defined) is
 
 - The standard library is deliberately hybrid: high-level APIs live in ZL, while the
   VM, OS access, parsing engines, and storage primitives stay native.
-- Async is partial: `async func`, `Task<T>`, `await`, and collecting a task from sync
-  code with `block()` (plus `ignore()`/`cancel()`) work; cancellation propagation,
-  unobserved-failure reporting, and async lambdas are pending.
+- Async is cooperative: `async func`, `Task<T>`, `await`, `block()`/`ignore()`/`cancel()`,
+  and async lambdas (`async func(x) => ...`) work. `cancel()` requests cancellation, which a
+  task observes at its next `await` and passes on to the tasks spawned from its body; a
+  synchronous `Task.spawn` closure cannot notice mid-run, so it settles as cancelled at
+  completion. A task dropped without `block()`/`ignore()` reports its failure to stderr at
+  teardown instead of vanishing (exit status unchanged by design).
 - `zlpkg` has no registry — dependencies resolve by `git` URL or local `path` only,
   with no version ranges, workspaces, or dev-dependencies.
 - One primary type per file, matching the file stem (helper declarations may share the

@@ -25,7 +25,7 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release           # once
 cmake --build build --config Release --target zl-tests   # core + every regression target
 (cd build && ctest -C Release)                           # 42 tests, includes both parity scripts
 examples/run_all.sh build/zl_language                    # 52 examples, byte-compared to their expected output
-bash scripts/run_regressions.sh build/zl_language all    # 88 fixtures under tests/zl (verified 2026-09-19)
+bash scripts/run_regressions.sh build/zl_language all    # 91 fixtures under tests/zl (verified 2026-09-20)
 bash scripts/native_gate.sh build/zl_language            # native tier gate
 ```
 
@@ -35,13 +35,13 @@ Priorities: **P0** produces a wrong result or refuses a valid program ·
 
 ## Start here
 
-The three with the best value-to-risk ratio right now:
-
-| # | Task | Why first |
-| --- | --- | --- |
-| [P1-7](#p1-7--async-cancellation-unobserved-failures-async-lambdas) | Async: cancellation, unobserved failures, async lambdas | Three named gaps the README already lists, each with an obvious fixture; `async func(x) => …` is the smallest of them |
-| [P1-9](#p1-9--reachability-is-a-report-nothing-deletes-dead-code) | Reachability is a report; nothing deletes dead code | The report and the deleter both exist and are tested - the missing piece is the argument for where the boundary sits, plus a measured bytecode delta |
-| [P2-7](#p2-7--typed-field-by-field-c-struct-schemas) | Typed field-by-field C struct schemas | Self-contained: one `zl-bind` emitter change and one test that reads and writes each field by name |
+Only the native line remains: P1-6, whose execution driver shipped 2026-09-20
+and whose remaining half is one value class at a time in the subset (refs and
+objects, gated on the GC map), plus PF-3, which follows it. Closed the same
+day: P1-10 (stabilization gate - two fixtures, two written arguments, verdict
+in the [examples review](examples/REVIEW.md)), P2-5 (registry scope in
+[docs/packages.md](docs/packages.md)), and PF-1 + PF-2 at the re-measured
+numbers in [research/report.md §2.9](research/report.md).
 
 ---
 
@@ -57,111 +57,55 @@ closed 2026-09-18 while writing the `Condition` fixture below) - are in
 
 ## P1 - promised capability, or a daily gap
 
-### P1-6 · Native backend: not an execution driver, and a small subset
+### P1-6 · Native backend: the driver runs integers and doubles; refs and objects stop at the GC map
 
-- `--backend native` generates machine code and still executes on the VM
-  (`zl --help` says so outright); mixed-mode native execution is unimplemented.
-- The subset is ~1.7% of the functions in a realistic module
+**Driver (2026-09-20):** `zl --run-native <file.zl> [--call NAME] [--int64 v |
+--double v]... [--iters n]` maps the emitted module executable, binds
+direct-call relocations, and refuses anything it cannot honestly call *by name
+and reason* (runtime imports, signatures that mix register files or carry
+references, more than six arguments, non-x86-64-Linux hosts).
+`tests/native_exec_parity.py` (ctest `native-exec-parity`) requires driver and
+VM to agree on `result` and accumulated `total` for both calling shapes - for
+the double kernel that is bit-for-bit agreement through the shortest
+round-trip formatter - and prints the wall pairs (~6 ms machine code vs
+~870 ms interpreter for `sumSquares`, 0.16 vs 24 ms for `poly`, per 10,000
+calls on the sandbox). See [docs/native-backend.md](docs/native-backend.md).
+
+**Remaining:**
+- The subset is still ~1.7% of the functions in a realistic module
   ([research/report.md](research/report.md) §2.7) - ints and floats, no refs,
-  objects, collections, closures, exceptions or async.
+  objects, collections, closures, exceptions or async; the driver calls
+  all-integer and all-double signatures and refuses the mix by name.
+- In-program mixed mode is unimplemented: `--backend native` compiles the subset
+  and still runs the program on the VM.
 - Win64 is select-only (`TargetMachine::encoderAvailable()` false,
   `src/native/pipeline.cpp:59`); there is no arm64 encoder, so macOS CI
   cross-compiles to SysV.
 - No register allocator, no stack arguments, no GC maps or safepoints, no unwind
   tables, no object-file or JIT writer.
-- An arithmetic fault in native bytes is `SIGILL`, not a catchable
-  `ArithmeticError`.
+- An arithmetic fault in driver-executed native bytes is `SIGILL`, not a
+  catchable `ArithmeticError`.
 
-**Done when** one value class at a time joins the subset - refs and objects are
-the useful next step - and a named program (start with
-`tests/zl/valid/native/NumericKernel.zl` plus collections) runs natively end to
-end with a measured wall time against the VM.
-
-### P1-7 · Async: cancellation, unobserved failures, async lambdas
-
-`async func`, `Task<T>`, `await` and `block()` work; cancellation propagation,
-unobserved-failure reporting and async lambdas are pending
-([README](README.md#current-limitations)).
-
-**Done when** a cancelled task propagates to the tasks it spawned, a task dropped
-without `block()`/`ignore()` reports its failure instead of vanishing, and
-`async func(x) => …` parses - each with a `tests/zl/valid/concurrency_regressions`
-fixture.
-
-### P1-9 · Reachability is a report; nothing deletes dead code
-
-`src/mir/reachability.cpp` produces a complete, over-approximated report and
-`src/mir/opt_dead.cpp` deletes dead blocks and values - but never a function,
-deliberately, because reflection reaches functions by name. Dead functions are
-still lowered, verified, optimised and emitted.
-
-**Done when** the boundary is made precise: whatever the report can prove
-unreachable *given* reflection and unpinned function values is removed, with the
-argument written down and a measured bytecode-size delta on the benchmark corpus.
-
-### P1-10 · Stabilization leftovers ([REVIEW.md:83-86](examples/REVIEW.md))
-
-FFI callback quiescence and ownership; channel cancellation and progress
-guarantees; blocking native-resource finalizers; the remaining exception and
-`Shared` audit.
-
-**Done when** each has a fixture that would have caught the original report, or a
-written argument that the behaviour is correct as it stands.
+**Done when** one value class at a time joins the driver and the backend - refs
+and objects are the useful next step, and the GC map is their gate - until a
+named program (start again from `NativeExecBench.zl`, plus collections) runs
+end-to-end through `--backend native` with a measured wall time against the VM.
 
 ---
 
-## P2 - polish, measurement, ecosystem
-
-### P2-5 · `zlpkg` has no registry
-
-Git URL or local `path` only; exact versions, no ranges, no workspaces, no
-dev-dependencies ([docs/packages.md](docs/packages.md#external-dependencies-zlpkg) -
-the pointer is an anchor, not a line range, because this file's own edits keep
-moving the lines).
-
-**Done when** the intended scope is decided and written down - a registry is a
-service, not a feature, and "no registry yet" should say what replaces it.
-
-### P2-7 · Typed field-by-field C struct schemas
-
-FFI passes opaque buffers; a typed schema per C struct is a later ABI extension
-([docs/native.md](docs/native.md)).
-
-**Done when** `zl-bind` emits a typed schema for a struct with mixed field types
-and a test reads and writes each field by name.
-
-(P2-8 - `owned` ends rootedness but frees nothing - closed 2026-09-19 with the
-Phase 0 baseline in [docs/memory-domains.md §10.1](docs/memory-domains.md#101-phase-0-baseline-measured-2026-09-19);
-see [Done](#done).)
-
----
 
 ## Performance ([research/report.md](research/report.md))
 
 Measured, not estimated. Highest-value gap if you care about speed.
 
-### PF-1 · MIR bytecode is larger and slower than the reference compiler
-
-~42-49% more bytecode (§2.3) and ~9-36% slower on compute-heavy programs (§2.4:
-Prims +9%, Recursion +36%); the MIR backend is ~3.8× slower to *run* than the
-reference code generator (§2.2).
-
-**Done when** bytecode size is within 10% of the reference on the corpus, or the
-wall-time delta is explained instruction by instruction and the difference is
-bought back where it matters.
-
-### PF-2 · The optimiser costs ~44 ms and buys nothing at runtime
-
-No loop transforms; the default compile is ~8× the reference path, and for small
-programs the fixed ~44 ms dominates (§2.2, §2.4, §5.2).
-
-**Done when** there is either a time budget (scale passes to program size) or a
-transform that measurably pays for itself on the corpus.
-
 ### PF-3 · Native is not a performance path yet
 
-Follows from [P1-6](#p1-6--native-backend-not-an-execution-driver-and-a-small-subset):
-~1.7% of functions, and the program still executes on the VM.
+Follows from
+[P1-6](#p1-6--native-backend-the-driver-runs-integers-and-doubles-refs-and-objects-stop-at-the-gc-map):
+~1.7% of functions, and the whole-program path still executes on the VM. The
+driver (`zl --run-native`) has since measured the other direction - compiled
+kernels ran ~140x their VM twin on identical loops - which locates the gap
+precisely: it is subset coverage, not the code quality of what is covered.
 
 ---
 
@@ -182,6 +126,97 @@ confirmed already fixed on 2026-09-17; see [Done](#done) and
 
 Most recent first. Kept briefly so the gates that cover each fix are findable,
 then deleted - [docs/changelog.md](docs/changelog.md) is the permanent record.
+
+- [x] **PF-1 · MIR bytecode is larger and slower than the reference compiler** (2026-09-20) -
+  size half closed at the measured numbers: post-P1-9 re-measurement on the same 16
+  positive programs, one build ([research/report.md §2.9](research/report.md)) - total
+  3,246,480 B reference vs 433,480 B pipeline (−86.6%), 15 of 16 between −89% and
+  −99%, the single outlier (`Closures.zl`, +56.7%) exactly the documented deletion-gate
+  refusal. The runtime half of §2.4 stands until the native work (P1-6, PF-3) remeasures
+  it; the size "within 10%" bar is met by being 87% under.
+
+- [x] **P2-5 · `zlpkg` has no registry** (2026-09-20) - decided, not deferred: a
+  registry is a hosted service (name index, curation, yanks) and stays out of
+  this repository's scope. What replaces it is written into
+  [docs/packages.md](docs/packages.md): the manifest states location (`path`/`git`)
+  and the name-agreement rule plus conflict errors make wrong-source fetches loud;
+  `zlpkg.lock`'s pinned commits play the artifact-store role; exact versions stay
+  identity-not-selection, so ranges stay out; the future-registry-shaped hole is
+  one key in the inline-table grammar. No code changed.
+
+- [x] **PF-2 · The optimiser costs ~44 ms and buys nothing at runtime** (2026-09-20) -
+  the second done-when branch is met with margin: `eliminate-dead-functions` is a
+  transform that pays for itself on the corpus, measured - it turns the optimiser
+  from the dominant compile stage (43.9 ms median) into the cheapest (~5 ms median,
+  76 ms across 16 programs), the default pipeline from 8.2x to 2.2x the reference
+  wall time, and pays 87% of artifact size on top; compile *and* size now favor the
+  optimized path. No time budget was needed, so the first branch (size- or
+  time-bounded default) is explicitly not taken. Update written into
+  [research/report.md](research/report.md) sections 2.9, 3 and 5.
+
+- [x] **P1-10 · Stabilization leftovers** (2026-09-20) - all four closed, each at a
+  fixture or a written argument, verdict recorded in
+  [examples/REVIEW.md](examples/REVIEW.md). Channels: `ChannelCancelledWaiters.zl`
+  pins both cancellation/progress directions on one thread (a cancelled receiver must
+  not swallow the next send; an unmatchable receive must end in the deadlock error,
+  not a hang). Exceptions/Shared: `SharedLockThrowRelease.zl` pins release-on-throw,
+  single propagation and cell reuse for the `Shared<T>.withLock` variant, the
+  cell-side counterpart of the O5 `MutexLocks.zl` pin. FFI callbacks: quiescence is
+  structural (registry-coupled drain-on-close lifetimes, token lookup before
+  dispatch) and was already fixture-pinned six-ways by `zl-native-ffi-lifetime-tests`.
+  Native-resource finalizers: none exist on the GC path - release is explicit
+  boundary consumption only - and the accepted leak-instead-of-block trade is now
+  argued in [docs/native.md](docs/native.md). No runtime code changed.
+
+- [x] **P1-9 · Reachability is a report; nothing deletes dead code** (2026-09-20) -
+  `eliminate-dead-functions` ships as the framework's first module pass. It deletes
+  functions only when `ReachabilityReport::complete()` proves the graph closed - entry
+  point present, no reachable native of the *whole* reflection family (`Type.methods()`
+  renders the function table into program output, so enumeration gates removal too,
+  not just invoke), every function-value call pinned to a single closure body - and it
+  keeps, beyond the report, every static initializer (reflection can trigger it) and
+  every hidden dispatch the bytecode backend materialises: shared-cell access,
+  collection literal growth and construction. `include/zl/mir/backend_edges.hpp` owns
+  that edge list for the emitter and the analysis together; a dispatch site that
+  resolves to no candidate now flips the report incomplete instead of resolving to
+  nothing. Survivors compact, renumber, and drag their references with them; any
+  reference the keep set cannot explain is a total refusal, never a partial commit.
+  The differential's structure check pairs functions by name now: removal is a note,
+  while additions, moves and renames stay mismatches. The argument is written down in
+  `docs/mir-optimizer.md` ("Function removal"). Measured on the corpus with
+  `--artifact-stats` (54 programs: every example + the allocation benchmark): bytecode
+  bytes 17.5 MB → 3.3 MB (**−81.3%**), function entries 16,399 → 2,996, and the
+  optimise stage itself 3.07 s → 0.62 s; the benchmark pair alone −92.9%;
+  `Reflection.zl`/`Lambdas.zl`/`Generics.zl` unchanged by design.
+  Gates: `zl-mir-opt-tests` 196 checks (renumber, three refusal reasons, dispatch and
+  static keeps, differential removal-vs-growth/rename/reorder, idempotence, the 9-pass
+  order), 42/42 ctest, 52/52 examples byte-compared, 91/91 regression fixtures,
+  native gate. See [docs/changelog.md](docs/changelog.md).
+- [x] **P2-7 · Typed field-by-field C struct schemas** (2026-09-20) - a plain-data C
+  `struct` with only scalar fields now generates a typed schema: zero-initialized storage
+  behind the opaque slot map (type-tagged: a struct handle is not a class handle),
+  `<Ns>.<Struct>_get_<field>`/`_set_<field>` pairs per field, `_size`/`_offset_<field>`
+  layout queries, and a generated `ZlFieldSchema` table whose `offsetof`/`sizeof` entries
+  are target-compiler-evaluated under `static_assert`s. Pointer/array/non-scalar or empty
+  structs, and fields colliding with the facade, are refused at generation. The ZL facade
+  gets typed per-field accessor pairs; the manifest carries the schema.
+  Gates: `tools/zl-bind/test_zl_bind.sh` - manifest/facade/docs greps, a C++ test that
+  reads and writes each field of a `bool`/`int32_t`/`double`/`uint16_t` struct by name
+  (zero defaults, negatives, truncation at the field's own width, offsets inside the
+  struct, close-then-use refused) and drives the struct through both bytecode pipelines
+  from ZL. See [docs/changelog.md](docs/changelog.md).
+- [x] **P1-7 · Async: cancellation, unobserved failures, async lambdas** (2026-09-20) -
+  all three named gaps are closed and pinned. `async func(x) => …` now compiles on MIR
+  (a callable's async signature keeps the *body* type; `Task<T>` is the call boundary's -
+  see [docs/changelog.md](docs/changelog.md)); a cancelled task cascades its request to
+  the tasks spawned from its body (weak spawn edges, cooperative, pending spawns cancelled
+  on arrival, CPU-pool closures skip or settle-as-cancelled); and a dropped failure's
+  stderr report is pinned on both sides - `tests/runtime_task_executor_tests.cpp`
+  (`testUnobservedFailureReport`, `testCancellationCascade`) and
+  `tests/zl/valid/concurrency_regressions/{AsyncLambdaTasks,CancellationPropagates,UnobservedTaskFailure}.zl`
+  under MIR, `ZL_MIR_OPT=0` and `ZL_COMPILER=ast`. README, `docs/mir.md` and
+  `examples/advanced/AsyncTasks.zl` (now demonstrating an async lambda) follow the fix.
+  Gates: 42/42 ctest, 52/52 examples byte-compared, 91/91 regression fixtures.
 
 - [x] **P2-8 · `owned` ends rootedness but frees nothing - Phase 0 baseline
   measured, box recycling lands with numbers** (2026-09-19) -

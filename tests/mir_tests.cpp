@@ -2175,6 +2175,20 @@ Module buildClosureValueModule() {
         runId = fb.function().id;
     }
 
+    // `shared_with_lock` reaches the `Shared` class's `withLock` method - the
+    // bytecode backend materialises that dispatch even though the MIR opcode
+    // names no callee - so, exactly as in a real lowered module, the class
+    // must own the method here. Without it the site is a dispatch nothing can
+    // serve, and the report is (correctly) incomplete.
+    {
+        FunctionBuilder fb = builder.addFunction("Shared.withLock(object)");
+        fb.setReturnType(types.voidType());
+        const BlockId entry = fb.addBlock();
+        fb.setCurrentBlock(entry);
+        fb.emitReturn();
+        fb.finish();
+    }
+
     FunctionId mainId = kNoFunction;
     {
         FunctionBuilder fb = builder.addFunction("Work.main()");

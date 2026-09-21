@@ -35,14 +35,17 @@ something checks them, and "the caller promised" is not something.
     zl --emit-native-ir   <output|-> <file.zl>   # stop after selection
     zl --emit-native-code <output|-> <file.zl>   # also emit machine code
     zl --emit-machine-code <output.zlm> <file.zl>  # the ZLM1 container, from MIR
+    zl --run-native <file.zl> [--call NAME] [--int64 v]... [--iters n]  # execute
 
 `--backend native` runs the *same* pipeline and then executes the program on the
-VM: the native tier is a code generator, and mixed-mode native execution is not
-implemented yet, so the executed artifact is bytecode translated from the same
-verified MIR (reported on stderr as `execution: VM`). `--emit-machine-code` used
-to consume the legacy `zl::ir`; it now writes the same `ZLM1` container from this
-backend's emitted functions, and it is the reason the legacy machine-code path has
-no CLI consumer left.
+VM: in-program mixed-mode native execution is not implemented, so the executed
+artifact is bytecode translated from the same verified MIR (reported on stderr
+as `execution: VM`). What was missing on the other side - a consumer of the
+emitted bytes - is now `--run-native`, the execution driver
+(`include/zl/native/exec.hpp`), described under **Execution driver** below.
+`--emit-machine-code` used to consume the legacy `zl::ir`; it now writes the
+same `ZLM1` container from this backend's emitted functions, and it is the
+reason the legacy machine-code path has no CLI consumer left.
 
 The emit commands print, on stderr, a per-function ledger: which functions were compiled
 natively, and for every other function *by name and with a reason* why it was
@@ -316,6 +319,47 @@ onto the VM. `SelectionOptions::allowRuntimeCalls` gates it, because a runtime
 call has an ABI the caller must honour and that should be an explicit choice per
 pipeline rather than a silent fallback.
 
+## Execution driver
+
+`--run-native` is the point where emitted bytes stop being an artifact and
+start being a running program: it compiles the file through the same pipeline
+(verified MIR, optimised, selected, emitted), maps the whole emitted module
+into one page-aligned arena, binds every direct-call relocation among the
+module's own functions, flips the pages executable, and calls the function
+`--call` names - bare method tokens resolve when unambiguous
+(`sumSquares` finds `NumericKernel.sumSquares(int)`). Without `--call` it lists
+what the subset compiled. `--iters` repeats the call, times the loop, and
+accumulates its results in the same order the program's VM loop does, so the
+two lines are comparable as data:
+
+    native-exec: NativeExecBench.sumSquares(int) result=328350 iters=10000 total=3283500000 native_ms=6.04
+    vm-exec:     NativeExecBench.sumSquaresVm(int) result=328350 iters=10000 total=3283500000 vm_ms=870
+
+(the second line is the same program's VM twin, run as an ordinary `zl`
+program - `tests/zl/valid/native/NativeExecBench.zl`; ctest
+`native-exec-parity` requires `result` and `total` to agree per tier pair -
+for the double kernel `poly`, agreeing *as printed* means agreeing bit for
+bit, because both sides render the shortest round-trip decimal of the same
+binary64 accumulator). The millisecond columns swing with
+the machine - they are a measurement, not an assertion - but the sign does not
+move much: on the sandbox they measured on, the machine-code loop ran ~140x
+faster than the interpreter running the identical arithmetic.
+
+The driver speaks two call shapes, chosen by the signature it finds, and
+refuses everything else *by name and reason, before anything runs*: every
+parameter and the result Integer (SysV `int64` registers, at most six), or
+every parameter and the result Float (six XMM registers, result in `xmm0`).
+A signature that *mixes* the register files is refused rather than marshalled
+- one C++ cast describes exactly one shape, and faking the other would mean
+generating a thunk, which this driver does not do. Also refused: a module
+with an unbound call site or any runtime-call relocation (those symbols
+belong to the VM's world, and a GC-map-free native frame cannot enter it),
+and non-x86-64-Linux hosts (the same guard as the executable tests - other
+platforms get `unsupported platform`, not a guess). Those refusals are the
+subset boundary made operational: every one of them names the machinery the
+"deliberately missing" list below already keeps out. Refs and objects - with
+the GC map they imply - remain P1-6's other half.
+
 ## Tests
 
 `tests/native_backend_tests.cpp` (target `zl-native-backend-tests`) runs the
@@ -324,6 +368,12 @@ they are mapped executable, direct calls are relocated, and the result is called
 through a function pointer and compared against what ZL's semantics say the
 program computes. A backend test that only inspects the IR proves the backend
 agrees with itself.
+
+`tests/native_exec_tests.cpp` (target `zl-native-exec-tests`) tests the
+execution driver itself: the arena plus relocation binding under a real
+native-caller-calls-native-callee program, name resolution (exact, bare token,
+miss list), the signature-shape classifier, and each refusal - decided from the
+signature, before anything runs.
 
 `tools/native_demo.sh` is the same idea in shell form, for looking at rather
 than asserting on.
@@ -342,6 +392,8 @@ allocation, stack argument passing, a GC map and safepoints, unwind tables
 (hence an arithmetic fault in natively executed code is a SIGILL trap, not a
 catchable `ArithmeticError` — the VM remains the tier where those are
 catchable), object layout and field access, string and collection operations,
-closures, generic instantiation, jump tables for `switch`, an object-file or
-JIT writer (the emitter produces bytes plus relocations and stops there), and
-any target other than x86-64 System V.
+closures, generic instantiation, jump tables for `switch`, a *general* loader
+— there is still no object-file writer and no JIT compiler emitting new code;
+the execution driver maps already-emitted bytes and nothing else (that is why
+the driver refuses GC-shaped signatures: it consumes the subset boundary, it
+does not extend it), and any target other than x86-64 System V.

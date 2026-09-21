@@ -214,12 +214,17 @@ The verifier enforces all of these. They are the contract a backend may rely on.
    `reachableFunctions` (`include/zl/mir/reachability.hpp`) walks the call graph
    from the entry point and returns an over-approximation: every override in a
    virtual receiver's hierarchy, every same-named function when a dispatch site
-   names a class this module does not have, and a referenced static's initializer.
-   It reports `complete() == false` when the program reaches reflection's invoke
-   family, because calling a `Method` value enters code the module never named -
-   so the answer is a lower bound there and says so. The approximation direction
-   is deliberate: a function it calls unreachable really is unreachable, which is
-   what a pass that deletes code needs, and nothing in this phase deletes code.
+   names a class this module does not have, the `Shared` methods and collection
+   methods the bytecode backend dispatches through instructions that name no
+   callee (`include/zl/mir/backend_edges.hpp` - the emitter and the analysis
+   share the list), and a referenced static's initializer. It reports
+   `complete() == false` when the program reaches the reflection family, because
+   a `Method` value enters code the module never named and `Type.methods()`
+   reads the function table itself - so the answer is a lower bound there and
+   says so. The approximation direction is deliberate: a function it calls
+   unreachable really is unreachable, which is what a pass that deletes code
+   needs - `eliminate-dead-functions` deletes exactly under `complete()`
+   (docs/mir-optimizer.md, "Function removal").
 17b. **Data flow is derived, never stored in the IR.** `include/zl/mir/dataflow.hpp`
    provides one definition of "a use" (`forEachValueUse`), def-use chains
    (`DefUseInfo`), liveness over slots and values (`LivenessAnalysis`), a
@@ -408,8 +413,9 @@ void return and the runtime nil the task completes with.
 `task_block` waits for a task and yields its payload, and is rejected in
 `async` code (which suspends with `await` instead). `task_ignore` detaches
 failure propagation; `task_cancel` requests cancellation, which the task
-observes at its next suspension point. MIR models the request edge only,
-because the runtime delivers nothing beyond it either.
+observes at its next suspension point and which the runtime then cascades to
+the tasks spawned from that task's body. MIR models the request edge only;
+the cascade is runtime state, not a graph edge the module sees.
 
 ### Scoped locks and shared state
 

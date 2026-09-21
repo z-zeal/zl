@@ -168,7 +168,8 @@ Two distinct effects are visible and are separated here deliberately:
 1. **End-to-end, optimised MIR is the slowest configuration** — but this is
    almost entirely the optimiser's fixed ~44 ms compile cost, not execution.
    Subtracting compile time, optimised and unoptimised MIR execute essentially
-   identically (Recursion 745 vs 750 ms; ControlFlow 83 vs 86 ms).
+   identically (Recursion 745 vs 750 ms; ControlFlow 83 vs 86 ms). *(The 44 ms
+   premise no longer holds on 2026-09-20 - see §2.9.)*
 2. **MIR-derived bytecode executes slower than the reference compiler's
    bytecode** for compute-heavy programs (Prims +9%, Recursion +36%,
    Concurrency +9%), consistent with the ~40% larger instruction stream running
@@ -277,6 +278,52 @@ what (a)+(b)+(c) cannot buy is eager release at scope exit, which is exactly
 what the domain phases exist to measure against this table. Raw rows:
 `benchmarks/results/allocation_{before,after}{,2}.json`.
 
+### 2.9 Size re-measurement after P1-9 (measured 2026-09-20)
+
+P1-9 closed by teaching the pipeline to delete unreachable functions, so the
+§2.3 size finding - "MIR-derived bytecode is ~42% larger than the reference
+after optimisation" - no longer reproduces. Same `--artifact-stats` method,
+same 16 positive programs, default pipeline against `--reference-compiler`;
+all three columns were measured the same day on one build, the "before" column
+being the default pipeline minus `eliminate-dead-functions` via
+`ZL_MIR_OPT_PASSES`:
+
+| Measure | reference | MIR opt (before P1-9) | MIR opt (now) |
+| --- | ---: | ---: | ---: |
+| Bytecode bytes, median | 201,460 | 316,000 | 7,360 |
+| Bytecode bytes, total | 3,246,480 | 5,104,240 | 433,480 |
+
+The corpus total is **−86.6%** against the reference, and 15 of 16 programs
+measure between −89% and −99%. Two things produce that, and only the first is
+new: the reference compiler emits every stdlib function for every program
+(its ~200 KB floor here), while the MIR backend has always emitted only what
+the module keeps - and P1-9 made that keep set actually provable, deleting the
+dead remainder of stdlib and generics from the chunk. The one program that is
+still larger, `Closures.zl` (+56.7%), is exactly the case the deletion gate
+refuses: an unpinned function-value call makes the graph incomplete, so
+keeping everything is the licensed answer. The argument, and the conditions
+under which a module may be reduced at all, are
+[docs/mir-optimizer.md](../docs/mir-optimizer.md#function-removal).
+
+On the full examples corpus (54 runnable programs, same ledger): bytecode
+bytes 17,518,680 → 3,281,120 (−81.3%) against pass-off, with the MIR-opt
+stage itself falling 3,070 ms → 616 ms because there is 80% less to verify
+and emit.
+
+The §2.2 compile-time story changes with it, on this corpus, as `ms_wall`
+totals: default pipeline 439 ms against pass-off 1,382 ms and reference
+170 ms; the per-program medians are 21.5 ms, 77.9 ms and 9.6 ms, so the
+pipeline/reference ratio drops from the reported 8.2× to a median of 2.2×.
+The optimiser's former fixed ~44 ms is gone - across these same 16 programs
+`ms_opt` now measures a median of 1.9 ms (total 76 ms, against the reported
+43.9 ms *per program*), because `eliminate-dead-functions` runs first and the
+remaining eight passes, the verifier and the emitter all process an
+~80%-smaller module. The optimiser is no longer a net compile-time cost on
+short programs: the same pipeline with the deletion pass removed is ~3×
+*slower* end to end. The §2.4 execution finding (MIR bytecode slower than
+reference) is untouched by this and stands until the native line (P1-6,
+PF-3) remeasures it.
+
 ---
 
 ## 3. Trade-off analysis
@@ -308,7 +355,12 @@ vs `--emit-mir-opt`). Its value today is size reduction and the proof
 infrastructure that makes the boundary trustworthy, not execution speed; for
 short-running programs it is a net compile-time cost. The measured execution
 difference between optimised and unoptimised MIR is within run-to-run variance
-once compile time is subtracted.
+once compile time is subtracted. *(Follow-up, 2026-09-20: with
+`eliminate-dead-functions` shipping first in the pipeline, the last clause
+inverts - the optimiser is now a compile-time net **win** on this corpus
+because everything downstream processes an ~80% smaller module; the size
+reduction is no longer its only value. Section 2.9 carries the numbers. The
+no-loop-transforms and byte-identical-hot-code statements still hold.)*
 
 **The native tier.** Real machine code is produced (x86-64, relocation-resolved,
 ~1,185 bytes for the 5-function subset), but at ~1.4× the bytecode backend's
@@ -344,11 +396,19 @@ cost is concentrated and actionable:
 
 1. **Bytecode quality parity.** The MIR bytecode backend emits ~42–49% more
    instructions than the reference compiler, which shows up directly as ~9–36%
-   slower execution. This is the highest-value gap to close.
+   slower execution. This is the highest-value gap to close. *(Update,
+   2026-09-20: the size half closed - P1-9's dead-function deletion put the
+   pipeline 86.6% **under** the reference on this corpus (§2.9). The execution
+   half remains open and now belongs to P1-6/PF-3.)*
 2. **An optimiser time budget.** The fixed ~44 ms optimiser cost dominates small
    programs; a size- or time-bounded default (or early exit when a pass set is
    exhausted) would recover most of the 8.2× compile-time multiplier without
-   touching the passes' guarantees.
+   touching the passes' guarantees. *(Update, 2026-09-20: moot - no budget or
+   early exit was needed. Putting a pass that deletes unreachable functions
+   first in the order made the optimiser stage itself the cheapest part of the
+   pipeline (43.9 ms → ~5 ms per program) and dropped the pipeline/reference
+   wall ratio from 8.2× to a measured 2.2× median (§2.9): the way to pay for
+   an optimiser was to give it something big to delete.)*
 3. **Close the remaining lowering gap** pinned in §3.7 (interface-typed static
    parameters — fixed-array element types through native collection primitives
    is now fixed) — the remaining one is a standalone corpus reproduction.

@@ -33,6 +33,30 @@ grep -q '"Demo.Counter_new"' "$TMP/Demo_bindings.cpp"
 grep -q '"Demo.Counter_value"' "$TMP/Demo_bindings.cpp"
 grep -q '"Demo.Counter_increment"' "$TMP/Demo_bindings.cpp"
 grep -q '"Demo.Counter_close"' "$TMP/Demo_bindings.cpp"
+# Typed field-by-field struct schemas (P2-7): a manifest entry per struct and
+# per named field, a compile-time layout table in the C++, get/set bindings
+# per field, and a facade whose accessors are typed by field.
+grep -q '^struct|DemoConfig|fields=4|storage=zero-initialized|handles=integer$' "$TMP/Demo.zlbind"
+grep -q '^field|DemoConfig.flag|bool|ctype=bool|access=getter+setter$' "$TMP/Demo.zlbind"
+grep -q '^field|DemoConfig.count|int|ctype=int32_t|access=getter+setter$' "$TMP/Demo.zlbind"
+grep -q '^field|DemoConfig.ratio|double|ctype=double|access=getter+setter$' "$TMP/Demo.zlbind"
+grep -q '^field|DemoConfig.mode|int|ctype=uint16_t|access=getter+setter$' "$TMP/Demo.zlbind"
+grep -q 'struct ZlFieldSchema' "$TMP/Demo_bindings.cpp"
+grep -q 'offsetof(DemoConfig, ratio)' "$TMP/Demo_bindings.cpp"
+grep -q 'static_assert(offsetof(DemoConfig, flag) + sizeof(bool) <= sizeof(DemoConfig)' "$TMP/Demo_bindings.cpp"
+grep -q 'DemoConfig_get_ratio_binding' "$TMP/Demo_bindings.cpp"
+grep -q 'DemoConfig_set_mode_binding' "$TMP/Demo_bindings.cpp"
+grep -q '"Demo.DemoConfig_get_flag"' "$TMP/Demo_bindings.cpp"
+grep -q '"Demo.DemoConfig_offset_count"' "$TMP/Demo_bindings.cpp"
+grep -q '"Demo.DemoConfig_size"' "$TMP/Demo_bindings.cpp"
+grep -q 'DemoConfig_new_binding, 0' "$TMP/Demo_bindings.cpp"
+grep -q 'DemoConfig_set_ratio_binding, 2' "$TMP/Demo_bindings.cpp"
+grep -q 'class DemoConfig' "$TMP/Demo.zl"
+grep -q 'public func ratio(): double' "$TMP/Demo.zl"
+grep -q 'public func set_mode(int value)' "$TMP/Demo.zl"
+grep -q 'Demo.DemoConfig_get_count(this.handle)' "$TMP/Demo.zl"
+grep -q '^## Struct schemas$' "$TMP/Demo.md"
+grep -q '| .mode. | .uint16_t. | .int. |' "$TMP/Demo.md"
 # The facade is real, parseable ZL: type-first fields and parameters, and
 # calls to the flattened runtime names.
 grep -q 'int handle' "$TMP/Demo.zl"
@@ -96,6 +120,44 @@ int main() {
     zl::nativeFunctionTable()[*close].fn({handle});
     try { zl::nativeFunctionTable()[*value].fn({handle}); return 6; }
     catch (const std::exception&) {}
+
+    // Struct schema bindings: every field reads and writes by name, the
+    // fresh object is zero-initialized, the schema offsets lie inside the
+    // struct's real size on this target, and a struct handle is type-checked
+    // against class handles rather than reinterpreted.
+    auto cfgNew = zl::findNativeFunction("Demo.DemoConfig_new");
+    auto cfgClose = zl::findNativeFunction("Demo.DemoConfig_close");
+    auto cfgSize = zl::findNativeFunction("Demo.DemoConfig_size");
+    const auto getF = [](const char* f) { return *zl::findNativeFunction(std::string("Demo.DemoConfig_get_").append(f).c_str()); };
+    const auto setF = [](const char* f) { return *zl::findNativeFunction(std::string("Demo.DemoConfig_set_").append(f).c_str()); };
+    const auto offF = [](const char* f) { return *zl::findNativeFunction(std::string("Demo.DemoConfig_offset_").append(f).c_str()); };
+    auto cfg = zl::nativeFunctionTable()[*cfgNew].fn({});
+    if (std::get<bool>(zl::nativeFunctionTable()[getF("flag")].fn({cfg}))) return 20;
+    if (std::get<std::int64_t>(zl::nativeFunctionTable()[getF("count")].fn({cfg})) != 0) return 21;
+    if (std::get<double>(zl::nativeFunctionTable()[getF("ratio")].fn({cfg})) != 0.0) return 22;
+    zl::nativeFunctionTable()[setF("flag")].fn({cfg, true});
+    zl::nativeFunctionTable()[setF("count")].fn({cfg, std::int64_t(-42)});
+    zl::nativeFunctionTable()[setF("ratio")].fn({cfg, 3.25});
+    zl::nativeFunctionTable()[setF("mode")].fn({cfg, std::int64_t(65535)});
+    if (!std::get<bool>(zl::nativeFunctionTable()[getF("flag")].fn({cfg}))) return 23;
+    if (std::get<std::int64_t>(zl::nativeFunctionTable()[getF("count")].fn({cfg})) != -42) return 24;
+    if (std::get<double>(zl::nativeFunctionTable()[getF("ratio")].fn({cfg})) != 3.25) return 25;
+    // A uint16_t field truncates to its own width, not the ZL int's.
+    if (std::get<std::int64_t>(zl::nativeFunctionTable()[getF("mode")].fn({cfg})) != 65535) return 26;
+    zl::nativeFunctionTable()[setF("mode")].fn({cfg, std::int64_t(65536)});
+    if (std::get<std::int64_t>(zl::nativeFunctionTable()[getF("mode")].fn({cfg})) != 0) return 27;
+    const auto size = std::get<std::int64_t>(zl::nativeFunctionTable()[*cfgSize].fn({}));
+    if (size < 4) return 28;
+    const char* fields[] = {"flag", "count", "ratio", "mode"};
+    for (int i = 0; i < 4; ++i) {
+        const auto off = std::get<std::int64_t>(zl::nativeFunctionTable()[offF(fields[i])].fn({}));
+        if (off < 0 || off >= size) return 29;
+    }
+    try { zl::nativeFunctionTable()[getF("flag")].fn({handle}); return 30; }
+    catch (const std::exception&) {}
+    zl::nativeFunctionTable()[*cfgClose].fn({cfg});
+    try { zl::nativeFunctionTable()[getF("flag")].fn({cfg}); return 31; }
+    catch (const std::exception&) {}
     std::cout << "zl-bind class/registry tests passed\n";
 }
 CPP
@@ -110,6 +172,13 @@ class M2e2e {
         log(Demo.Counter_value(h))
         Demo.Counter_close(h)
         log(Demo.zl_add(40, 2))
+        var cfg = Demo.DemoConfig_new()
+        log(Demo.DemoConfig_get_flag(cfg))
+        Demo.DemoConfig_set_flag(cfg, true)
+        Demo.DemoConfig_set_ratio(cfg, 0.5)
+        log(Demo.DemoConfig_get_flag(cfg))
+        log(Demo.DemoConfig_get_ratio(cfg))
+        Demo.DemoConfig_close(cfg)
     }
 }
 ZL
@@ -164,6 +233,29 @@ g++ -std=c++17 -I"$ROOT/include" "$TMP/Demo_bindings.o" "$TMP/example_native.o" 
 [[ "$(grep -c '^7$' "$TMP/e2e_out.txt")" == "2" ]] || { echo "e2e output mismatch" >&2; cat "$TMP/e2e_out.txt" >&2; exit 1; }
 [[ "$(grep -c '^12$' "$TMP/e2e_out.txt")" == "2" ]] || { echo "e2e output mismatch" >&2; cat "$TMP/e2e_out.txt" >&2; exit 1; }
 [[ "$(grep -c '^42$' "$TMP/e2e_out.txt")" == "2" ]] || { echo "e2e output mismatch" >&2; cat "$TMP/e2e_out.txt" >&2; exit 1; }
+[[ "$(grep -c '^false$' "$TMP/e2e_out.txt")" == "2" ]] || { echo "e2e struct default mismatch" >&2; cat "$TMP/e2e_out.txt" >&2; exit 1; }
+[[ "$(grep -c '^true$' "$TMP/e2e_out.txt")" == "2" ]] || { echo "e2e struct bool round-trip mismatch" >&2; cat "$TMP/e2e_out.txt" >&2; exit 1; }
+[[ "$(grep -c '^0.5$' "$TMP/e2e_out.txt")" == "2" ]] || { echo "e2e struct double round-trip mismatch" >&2; cat "$TMP/e2e_out.txt" >&2; exit 1; }
+
+# Structs are refused rather than guessed at when they cannot be described:
+# no fields at all, or a field whose type has no layout-safe binding.
+cat > "$TMP/empty_struct.h" <<'H'
+struct Nothing {
+};
+H
+if "$BIN" "$TMP/empty_struct.h" Empty "$TMP/empty_out" >/dev/null 2>&1; then
+  echo "expected empty struct rejection" >&2
+  exit 1
+fi
+cat > "$TMP/bad_field.h" <<'H'
+struct BadField {
+    const char* name;
+};
+H
+if "$BIN" "$TMP/bad_field.h" Bad "$TMP/bad_out" >/dev/null 2>&1; then
+  echo "expected unsupported struct field type rejection" >&2
+  exit 1
+fi
 
 
 cat > "$TMP/shared.h" <<'H'

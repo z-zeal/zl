@@ -1,6 +1,340 @@
 # Development Checkpoints
 
+## 2026-09-20 - P1-6 continues: the execution driver learns its second calling shape
+
+`--run-native` covered one signature today: all-integer in, all-integer out.
+It now covers the other shape the encoder already emits for - **all-double**:
+six XMM argument registers, result in `xmm0`, dispatched by the signature the
+driver finds, with a signature that *mixes* integer and double parameters
+still refused by name and reason (one C++ cast describes one register file;
+faking the other would mean generating a thunk, and this driver does not
+generate code). `NativeExecBench.zl` grew a `@native poly(double): double`
+kernel and its VM twin, and the parity line got stronger to match: both tiers
+print `result=` and an accumulated loop `total=`, and ctest
+`native-exec-parity` requires both to agree *as printed* - for doubles that
+means bit-for-bit, because both sides render the shortest round-trip decimal
+of the same binary64 accumulation (the two tiers' ten-thousand-step sums both
+end at exactly 11499.999999997886, rounding included). Python's independent
+evaluation of `0.7 * 1.5 + 0.1` is the third opinion. Measured: the double
+kernel runs 0.16 ms natively against 24 ms on the VM over 10,000 calls (~150x,
+same story as the integer kernel's ~140x); the ms fields are printed, not
+asserted. Refs and objects - with the GC map they imply - remain the other
+half of P1-6 and are unchanged here. The loader itself gained unit coverage -
+`zl-native-exec-tests` runs a native caller into a native callee through the
+driver's own relocation binding, exercises the shape classifier, and asserts
+each refusal message; execution cases skip (loudly) off x86-64 Linux, and the
+refusal logic is tested everywhere.
+
+
+## 2026-09-20 - P1-6, first half: native bytes get an execution driver, and it measures
+
+`--backend native` has been a code generator with no consumer since day one:
+emitted x86-64 was reported, packaged, but never called. `zl --run-native
+<file.zl> [--call NAME] [--int64 v]... [--iters n]` closes that. It compiles
+the program through the ordinary pipeline (verified MIR, optimiser on), maps
+the whole emitted module into one page-aligned executable arena, binds every
+direct-call relocation among the module's own functions, and calls the named
+function through the SysV int64 ABI - then, with `--iters`, times the loop.
+Everything outside what it can honestly call is *refused before execution, by
+name and reason*: modules with runtime-call relocations (those symbols belong
+to the GC'd VM world a native frame cannot enter), non-integer signatures
+(floats live in XMM registers; refs need GC maps the backend does not have -
+the same wall P1-6's remaining half is built on), more than six arguments,
+non-x86-64-Linux hosts. `include/zl/native/exec.hpp` owns the loader;
+`tests/zl/valid/native/NativeExecBench.zl` is the named program - an `@native`
+kernel, its VM twin, and a main whose loop the interpreter runs while the
+driver runs the machine-code one - and ctest `native-exec-parity` requires the
+two tiers to produce identical totals and the driver to refuse `main`
+naming what it did compile. On the sandbox the pair measures 6.0 ms
+(10,000 calls of sumSquares(100) in emitted bytes) against 870 ms for the
+identical arithmetic on the VM; the parity test prints both and asserts only
+equality of results, because milliseconds swing and the sign does not. The
+finding to carry into the rest of P1-6: the gap between tiers is subset
+coverage, not emitted-code quality. Docs updated
+([docs/native-backend.md](native-backend.md) gains the driver section), and
+`--help` says what is true now. Gates: ctest 43/43 (new test included),
+regressions 94/94 (new fixture included), examples 52/52, native gate PASS.
+
+## 2026-09-20 - PF-2 closed: the optimiser now pays for itself, measured
+
+The research report's finding that the default optimiser "costs ~44 ms and buys
+nothing" inverted with P1-9, and the re-measurement is written into
+[research/report.md](../research/report.md) sections 2.9 (new), 3 and 5. On the
+same 16 positive programs: the `ms_opt` stage drops from a 43.9 ms median per
+program to a 1.9 ms median (76 ms total across the corpus) because
+`eliminate-dead-functions` runs first and the eight remaining passes, the
+verifier and the emitter all process an ~80% smaller module; end-to-end
+`ms_wall` medians are 21.5 ms default against 77.9 ms with the pass removed and
+9.6 ms for the reference path, so the pipeline/reference compile-time ratio
+falls from the reported 8.2x to 2.2x. PF-2's done-when asked for a time budget
+or a transform that pays for itself on the corpus; the second branch is met
+with margin, and the budget branch is explicitly left un-built - the corpus
+numbers argue a pass that deletes most of the module *is* the time budget.
+Bytecode execution speed (section 2.4's finding) is unchanged by this and stays
+open with the native line (P1-6, PF-3).
+
+## 2026-09-20 - P1-10: the stabilization gate closes - two fixtures, two written arguments
+
+The four leftovers named by the 2026-09-08 stabilization update each get a
+verdict in [examples/REVIEW.md](../examples/REVIEW.md), and two of them finally
+get the fixture the original reports lacked. **Channels**: the cancel path
+removes a waiter from its queue, every rendezvous pops past terminal tasks, and
+a blocking sync operation whose only possible partner is gone raises the
+deadlock error instead of spinning - re-evaluated every pump round. That
+contract is now pinned by
+`tests/zl/valid/concurrency_regressions/ChannelCancelledWaiters.zl`: a
+cancelled `receiveAsync` must not swallow the next send; a cancelled queued
+`sendAsync` must not deliver later, and the receive chasing it must terminate
+in the error, never a hang. **Exceptions/Shared**: `Shared<T>.withLock` guards
+the cell with an RAII lock, so a throwing body unwinds through the unlock -
+but only the `Mutex` variant had a fixture for that since O5, while the cell
+variant is the one the backend's materialised dispatch runs.
+`tests/zl/valid/concurrency_regressions/SharedLockThrowRelease.zl` pins
+propagation-once, re-lockability after one throw, and the same for two. **FFI
+callbacks** and **native-resource finalizers** needed arguments, not code:
+callback quiescence is structural (process-local tokens, drain-on-close
+lifetimes coupled to registry entries, token validation before dispatch), the
+six `zl-native-ffi-lifetime-tests` cases already pin the lifetime algebra, and
+re-entry participates in the GC stop protocol; native resources have *no* GC
+path at all - release happens only as explicit boundary consumption - so the
+blocking-finalizer family is absent by construction, with the resulting leak
+stated as the accepted trade. Both write-ups live in
+[docs/native.md](native.md). Regression corpus 91 -> 93 fixtures, `all` modes
+green; no runtime or compiler code changed.
+
+## 2026-09-20 - P2-5: the `zlpkg` registry question gets an answer, not a backlog line
+
+`docs/packages.md` said "no registry or index exists yet", which invites every
+reader to price a registry as the next feature. The decision is now written
+down as a section ("No registry - what it would replace, and what does
+instead"): a registry is a hosted service - a name index plus curation - and
+stays outside this repository. The toolchain scope ends at deterministic fetch,
+and the parts a registry usually carries are re-pointed at what `zlpkg` already
+does: the manifest states the location and the dependency key must match the
+package's own `[package] name`, so a wrong URL is a loud conflict rather than
+a wrong package; `zlpkg.lock` pins commits, so git's object graph is the
+immutable store; the declared exact `version` is verified, so versions stay
+identity and not selection - no ranges, because range resolution is precisely
+the part that needs a hosted index to be trustworthy. The format keeps the
+smallest possible future door open: a registry would add one key resolving a
+name to the same `{ git, ref, version }` triple the resolver already consumes;
+nothing commits to building it. Dev-dependencies and workspaces stay out for
+the same stated-scope reason. Documentation-only; no resolver code changed.
+
+## 2026-09-20 - PF-1 closed: measured bytecode size, -86.6% against the reference
+
+The bytecode-size finding from the research report (section 2.3: MIR output
+~42% larger than the reference compiler after optimisation) is retired by
+[research/report.md section 2.9](../research/report.md), measured on the same
+16 positive programs with the same `--artifact-stats` ledger after P1-9
+shipped: total 3,246,480 bytes of reference output against 433,480 through the
+pipeline (-86.6%); the median program goes from a 201 KB reference floor to
+7 KB. Two effects compose, one old and one new: the reference compiler emits
+every stdlib function for every program and the MIR backend emits only what the
+module keeps - and P1-9 made that keep set provable, so the dead remainder is
+now deleted from the chunk instead of shipped. The single program still larger
+than reference (+56.7%, `Closures.zl`) is the documented refusal case: an
+unpinned function-value call leaves the graph incomplete, and a refusal keeps
+the whole module - correctness before size, as
+[docs/mir-optimizer.md](mir-optimizer.md#function-removal) argues. The
+wall-time half of the PF-1 write-up is untouched by this - that is the native
+performance line of work (P1-6, PF-3), and section 2.4's numbers stand until
+that work remeasures them. No code changed in the compiler for this entry; the
+deliverable is the measurement and the report section.
+
 Dated progress notes, newest first. These were previously appended to `README.md`.
+
+## 2026-09-20 - the dead-function boundary: a module pass, its proof, and an 81% smaller bytecode (P1-9)
+
+The reachability report had existed since its first landing with one hand
+tied: it answered "which functions can run" soundly, but nothing was allowed
+to *remove* on the strength of the answer, because reflection reaches
+functions by name. That sentence is now a theorem with a named boundary, and
+the boundary has a consumer.
+
+**The license.** `eliminate-dead-functions` (a new `ModulePass`, first of its
+kind to ship in this framework) deletes a function only when
+`ReachabilityReport::complete()` holds: the module has an entry point, no
+reachable function touches a native of the reflection family, and every
+reachable call through a function value is pinned to a single closure body.
+With the graph that closed, "outside the reachable set" is not absence of
+evidence but evidence of absence. The keep set is deliberately *wider* than
+the report licenses: every static field's initializer stays whether or not
+anything reads the field (reflection can read `Class.field` by name, and
+reading a lazy static runs its initializer), and the keep set is closed over
+every callee reference found in any kept body - not just the opcodes the
+analysis enumerates as edges. A rewrite the keep set cannot explain is a
+refusal of the whole removal, never a partial commit, and the pass states its
+reason - "reflection opens the call graph", "N unpinned function-value
+call(s)", "no entry point (library module)" - in its note rather than
+silently doing nothing.
+
+**The reflection rule got the precise edge.** It used to be that only the
+invoke forms opened the graph. But `Type.methods()` and friends read the
+function table itself, and the bytecode chunk's runtime-type metadata is
+built by iterating that very table - metadata a program prints *is* program
+output. A module that reaches any reflection native now keeps all of its
+functions. The catalog owns the predicate: `nativeEntersCodeByName` became
+`nativeIsReflective` over the contiguous family, so the analysis cannot
+drift from what a native does.
+
+**Two holes the corpus caught, and how they stay caught.** The dispatch
+matching in the analysis compared a call site's bare method name against
+functions' class-qualified declared names - never equal for a method - and
+the fallback name lookup missed the same way, so a `Shared.get()` reachable
+only through a shared-cell opcode vanished and stubbed `main`. And the
+bytecode backend *materialises* calls that no MIR instruction names:
+shared-cell access dispatches `Shared.get`/`setValue`/`withLock`, a list
+literal grows through `push`/`add`/`put`, and `new_collection` finds the
+class's empty constructor. Both sides now read one table,
+`include/zl/mir/backend_edges.hpp`, and a dispatch site that resolves to no
+candidate at all - hierarchy, supertypes, name fallback all empty - makes the
+report incomplete instead of "resolved to nothing". Fail-closed, by the
+framework's own rule 4.
+
+**What removal costs the checks.** The differential compared functions by
+index, which any removal breaks - it read renumbering as "every later
+function was renamed". `compareModules` pairs survivors by name instead: the
+optimised module must be a name-ordered subsequence of the original with
+identical signatures, the entry point is compared by name, and growth, moves,
+renames and additions stay mismatches; licensed removals land in the
+result's notes. The pass manager's module-pass records gained real
+instruction and block counts, so a whole-module rewrite shows up in
+`--mir-opt-check` traces as a number instead of `0 -> 0`.
+
+**Measured** with `--artifact-stats`, default pipeline vs the same pipeline
+minus this pass, on every loadable example plus the benchmark programs (54):
+bytecode instruction bytes 17,518,680 → 3,281,120 (**−81.3%**), chunk function
+entries 16,399 → 2,996, MIR-opt stage 3,070 ms → 616 ms. The benchmark
+corpus alone (`AllocationBenchmark.zl` + the native `Benchmark.zl`): 785,760 →
+55,680 bytes, −92.9%, functions 790 → 27. Unchanged where the boundary says
+unchanged: `Reflection.zl` at the reflection gate, `Generics.zl` and
+`Lambdas.zl` with everything live.
+
+Gates: `zl-mir-opt-tests` 196 checks including removal-and-renumber, all
+three refusal reasons, dispatch keeps (a subtype override stays, an
+un-dispatched method goes), the shared-cell and static-initializer keeps, the
+differential accepting removal but rejecting growth/addition/rename/reorder,
+and the nine-pass default ordering; 42/42 ctest; 52/52 examples
+byte-compared; 91/91 regression fixtures; native gate; the static
+`tools/mir_opt_check_all.sh` sweep over examples and stdlib.
+
+## 2026-09-20 - `zl-bind` binds C structs field by field against a typed schema (P2-7)
+
+`docs/native.md` said "Typed field-by-field C struct schemas remain a later
+ABI extension," and the generator agreed: a plain-data C `struct` either fell
+into the class path and died on "requires an explicit constructor" or had its
+data members silently skipped, leaving FFI to pass opaque buffers. Plain-data
+structs are now first-class generator input.
+
+**The parser grew a struct kind.** A `struct Name { ... }` whose body holds
+only scalar data members - no constructor, no destructor, no methods - is
+collected as a `NativeStruct` with a field list, where a member type must map
+to a fixed-width `int`, a `double`/`float`, or a `bool`. `long`, `long long`
+and friends stay unsupported because their width is target-dependent and the
+schema is a promise; a struct with no bindable fields, a pointer or array
+field, or a field named `handle`/`close` (which would collide with the
+facade) is refused at generation time, each with its own message. The
+scalar map itself was widened to the whole fixed-width family (`int8_t` …
+`uint64_t`), all mapping to ZL `int` with the C type preserved for casts and
+`sizeof` - a `uint16_t` field truncates to its own width, not to 64 bits.
+
+**The emitter grew the schema and the accessors.** Per struct: zero-initialized
+heap storage behind the same opaque-integer slot map the class bindings use
+(the slot carries a type tag, so a struct handle cannot be loaded as a class
+or another struct - the registry test pins the refusal); `<Name>_new`/
+`_close`/`_size` bindings; and for every field a typed `_get_<field>`/
+`_set_<field>` pair plus a compile-time `_offset_<field>` query. The layout
+is a real schema: a generated `ZlFieldSchema` table of `{name, type,
+offsetof, sizeof}` evaluated by the target compiler, with a
+`static_assert` per field that it lies inside the struct and an arity guard
+on the table itself. The ZL facade becomes a class with typed per-field
+accessors (`mode()` returns `int`, `set_ratio(double value)` takes a
+`double`), and the `.zlbind` manifest gains `struct|Name|fields=N` and
+`field|Name.f|zltype|ctype|access=getter+setter` lines so tooling can read
+the schema without the C++.
+
+Gates: `tools/zl-bind/test_zl_bind.sh` now asserts the manifest lines, the
+generated table and guards, the facade, the docs, the C++ round-trip of
+every field type *by name* (defaults zero, `int32_t` negative values, a
+`double`, a truncating `uint16_t`, offsets within size, the handle type
+tag, and close-then-use), and drives the struct through both bytecode
+pipelines end to end from ZL source; the empty-struct and pointer-field
+fixtures must be refused.
+
+## 2026-09-20 - Async closes out: async lambdas run on MIR, cancellation cascades, dropped failures report (P1-7)
+
+The README listed three async gaps; measured against a working build, two had
+already been built and one was half-built - and the half was load-bearing.
+
+**Async lambdas (`async func(x) => ...`) now compile on the MIR pipeline.**
+The parser, checker, closure metadata and `CallValue` scheduling already
+carried `LambdaExpr.isAsync` end to end (the reference pipeline ran the
+programs fine); what was missing was one convention mismatch in the typed IR.
+An async *function* in MIR declares its body's result type and the `isAsync`
+flag adds `Task<T>` at the call boundary - but the callable *signature* built
+from a checker inference (`TypeConverter::fromInferred`) rendered the
+signature's return from `functionReturnClassName`, which by the checker's
+convention *already* spells `Task<...>`. `call_indirect` then wrapped it a
+second time and verification refused the module with
+`call_indirect produces Task<Task<int>> but the temp is typed Task<int>`.
+Lowering now takes the signature's return from `taskValueType`/
+`taskValueClassName` - the body type, the way `declareFunction` stores it -
+and `nil` maps to `void` exactly as an async function's does. The checker
+part closed beside it: a call through a func value returned the bare
+`TASK`/`Task<...>` pair without the task's payload, so `mk().block().get()`
+saw `block()` yield `unknown`; `inferCallExpr`'s value-call arm now carries
+the payload (directly when the variable records it, otherwise decoded from
+the rendered `Task<...>` name, the same decode `inferLambdaExpr` uses for an
+expected signature). Arrow bodies, block bodies with `return`, void bodies,
+object payloads, and `await` inside the lambda body all run under MIR,
+`ZL_MIR_OPT=0`, and the AST pipeline with identical output.
+
+**Cancellation propagates to spawned tasks.** `RuntimeTaskState` records a
+weak spawn edge for every task created while a task body runs:
+`VM::scheduleAsyncInvocation` registers an async call under the invoking
+task, and both it and the `Task.spawn` native ask the thread-local
+`gCurrentSpawningTask` first - set by `resumeAsyncInvocation` around each
+execution step and by the spawn worker around the closure body - so a spawn
+made from a CPU-pool closure finds its parent on a foreign thread too. A
+`requestCancellation()` (or a terminal `cancel()`) cascades parent-first
+along those edges, remaining cooperative: a request is never itself a
+terminal transition. A child added to a parent whose cancellation is already
+in flight is cancelled on arrival, so the parent cannot race past its own
+request into a fresh spawn. A synchronous `Task.spawn` closure has no
+suspension point to notice at, so it skips its body when it starts cancelled
+and settles as cancelled at completion if the request arrives mid-run; its
+result is discarded exactly like a cancelled async body's. Edges are weak by
+design: a parent must not keep its children alive (a dropped child still
+owns its own unobserved-failure report), and the cascade's recursion
+terminates because `requestCancellation` is idempotent and spawn edges only
+ever point from older work to newer.
+
+**Unobserved failures already reported - now pinned.** The
+`RuntimeTaskState` destructor printed `unobserved task failure: ...` on
+stderr for an unobserved failed task; nothing asserted it anywhere. It is
+pinned on both sides: `testUnobservedFailureReport` in
+`tests/runtime_task_executor_tests.cpp` (the line appears at drop, names the
+failure, and stays silent after `observe()` and after `ignore()`, and a
+dropped *success* is silent), and `testCancellationCascade` pins the graph
+semantics (three-deep cascade, mid-flight spawn, terminal-cancellation
+cascade, unrelated tasks untouched, no parent keeping a child alive).
+
+**The "pending" claim was stale, and the docs moved with it.** README's
+async limitation now states what is cooperative about cancellation and what
+the teardown report does; `docs/mir.md` replaces "the runtime delivers
+nothing beyond [the request edge]" with the cascade; and
+`examples/advanced/AsyncTasks.zl` demonstrates an async lambda end to end
+(its verified output block gained `async lambda 36`).
+
+Gates: `tests/zl/valid/concurrency_regressions/AsyncLambdaTasks.zl`,
+`CancellationPropagates.zl` (parent -> child -> grandchild cascade, pending-
+cancel, and an uncancelled sibling that must run to completion), and
+`UnobservedTaskFailure.zl`, all under MIR, `ZL_MIR_OPT=0` and
+`ZL_COMPILER=ast`; the two C++ tests above; the existing
+`runtime_task_executor_tests`, `runtime_sync_tests` and
+`concurrency_regressions` suites unchanged; 42/42 ctest, 52/52 examples
+byte-compared, 91/91 regression fixtures.
 
 ## 2026-09-19 - Phase 1 (memory domains): annotation rules and the `memory` contract skeleton
 

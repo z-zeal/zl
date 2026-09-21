@@ -144,6 +144,9 @@ void RuntimeTaskState::cancel() {
             if (!firstError) firstError = std::current_exception();
         }
     }
+    // A terminal cancellation still cascades: children the task spawned
+    // before it settled were never given the request otherwise.
+    propagateCancellationToChildren();
     if (firstError) std::rethrow_exception(firstError);
 }
 
@@ -164,11 +167,43 @@ void RuntimeTaskState::requestCancellation() noexcept {
             // observer must not prevent remaining observers from running.
         }
     }
+    // Propagated after the observers so an awaiting parent's wake-up does not
+    // run behind a child cascade that itself wants to wake the same parent.
+    propagateCancellationToChildren();
 }
 
 void RuntimeTaskState::ignore() noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     failureObserved_ = true;
+}
+
+void RuntimeTaskState::addSpawnedChild(const std::shared_ptr<RuntimeTaskState>& child) {
+    if (!child || child.get() == this) return;
+    bool cancelNow = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        // A parent whose cancellation is already in flight (requested or
+        // terminal Cancelled) hands the request straight to the child: the
+        // parent may have raced through one more spawn before its next
+        // suspension point noticed.
+        cancelNow = cancellationRequested_ || status_ == TaskStatus::Cancelled;
+        spawnedChildren_.push_back(child);
+    }
+    if (cancelNow) child->requestCancellation();
+}
+
+void RuntimeTaskState::propagateCancellationToChildren() {
+    std::vector<std::shared_ptr<RuntimeTaskState>> children;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        // No dedup and no pruning: each entry is at most one lock away from
+        // "terminal, skip", and the list is bounded by the task's own spawns.
+        for (auto& weak : spawnedChildren_)
+            if (auto child = weak.lock()) children.push_back(std::move(child));
+    }
+    for (auto& child : children) {
+        if (!child->isTerminal()) child->requestCancellation();
+    }
 }
 
 void RuntimeTaskState::appendGCRoots(std::vector<Value>& roots) const {
