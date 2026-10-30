@@ -87,6 +87,12 @@ Both take a mode - `core` (default), `test`, `full`, `clean`, `help` - plus
 The default mode builds only the toolchain (3 binaries); it never pulls in
 tests, benchmarks or examples.
 
+After building, confirm it works with:
+
+```bash
+build/zl_language --version
+```
+
 ## Run a program
 
 ```bash
