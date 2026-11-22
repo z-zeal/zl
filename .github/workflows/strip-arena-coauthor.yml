@@ -1,0 +1,236 @@
+# Remove Arena AI as a co-author ("collaborator") on commits.
+#
+# Arena is never added under Settings -> Collaborators. What actually
+# happens is a trailer in the commit message:
+#
+#     Co-authored-by: arena-agent <297053741+arena-agent@users.noreply.github.com>
+#
+# GitHub promotes every Co-authored-by trailer to a full co-author: an
+# avatar next to yours on the commit, a second author on the PR, and a
+# permanent entry in the repository's contributor list. Deleting the
+# trailer is the only fix, and it has to happen by rewriting the commits -
+# there is no settings toggle for it.
+#
+# What this workflow does, per trigger:
+#
+#   push to any branch except main/master  -> rewrite the branch's own
+#     commits (those not yet on the default branch) with
+#     scripts/strip_arena_coauthor.py as a --msg-filter, replace any
+#     Arena author/committer identity with the pusher's, verify no Arena
+#     attribution is left, then force-push with --force-with-lease.
+#     Branches with nothing to strip are left completely untouched:
+#     no rewrite, no force-push, commit hashes unchanged.
+#
+#   push to main/master, or any pull request -> check only, and fail.
+#     Rewriting the default branch would change every hash in the project
+#     and break every clone, and a PR from a fork cannot be pushed to from
+#     here anyway. A red check on these means "strip it before merging":
+#     run, locally, on your branch
+#         FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f \
+#           --msg-filter 'python3 scripts/strip_arena_coauthor.py' \
+#           -- origin/main..HEAD
+#         git push --force-with-lease
+#     (Commits already merged into main keep their co-author forever,
+#     short of a deliberate, announced history rewrite of main itself.
+#     This workflow will never do that on its own.)
+#
+# Two safety properties worth knowing before editing this file:
+#   * The force-push uses the GITHUB_TOKEN, and pushes made with that
+#     token do not trigger workflow runs - so the rewrite cannot loop by
+#     re-triggering itself. The github.actor guard below is a second
+#     line of defence for anyone who swaps in a PAT.
+#   * --force-with-lease=<ref>:<sha-before-rewrite> means the push is
+#     rejected, loudly, if somebody else pushed to the branch while the
+#     rewrite was running, instead of silently overwriting their work.
+
+name: Strip Arena co-author
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch: # clean the selected branch by hand, same as a push
+
+permissions:
+  contents: read
+
+# Never run two rewrites of the same ref at once, and never cancel one
+# halfway through a force-push.
+concurrency:
+  group: strip-arena-coauthor-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  rewrite-branch:
+    name: Rewrite branch commits without Arena co-author
+    if: >-
+      (github.event_name == 'workflow_dispatch' ||
+       github.event_name == 'push') &&
+      github.ref != 'refs/heads/main' &&
+      github.ref != 'refs/heads/master' &&
+      github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      # Used only if a commit is *authored* by Arena outright (normal
+      # Arena commits keep your authorship and only add the trailer, so
+      # this is a fallback, not the common path): the commit is then
+      # re-attributed to whoever pushed the branch, via their GitHub
+      # noreply address, instead of to the bot.
+      ARENA_FALLBACK_NAME: ${{ github.actor }}
+      ARENA_FALLBACK_EMAIL: ${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com
+    steps:
+      - name: Check out the branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Find the branch's own commits and check them
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          default_branch="${{ github.event.repository.default_branch }}"
+          base=""
+          if git fetch --no-tags origin "$default_branch" 2>/dev/null \
+             && git rev-parse --verify --quiet "origin/$default_branch" >/dev/null; then
+            base="$(git merge-base "origin/$default_branch" HEAD || true)"
+          fi
+          if [ -n "$base" ]; then
+            range="$base..HEAD"
+          else
+            # No shared history with the default branch: the whole branch
+            # is "its own commits" (e.g. an orphan or first-import branch).
+            range="HEAD"
+          fi
+          echo "range=$range" >> "$GITHUB_OUTPUT"
+          echo "old_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if python3 scripts/strip_arena_coauthor.py --check-range "$range" > offenders.txt; then
+            echo "dirty=false" >> "$GITHUB_OUTPUT"
+            echo "No Arena co-author attribution on this branch - nothing to do." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "dirty=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Arena co-author found, rewriting:"
+              echo '```'
+              cat offenders.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Rewrite commits (strip trailer, scrub Arena identities)
+        if: steps.check.outputs.dirty == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f \
+            --msg-filter 'python3 "$GITHUB_WORKSPACE/scripts/strip_arena_coauthor.py"' \
+            --env-filter '
+              author="$(printf %s "$GIT_AUTHOR_EMAIL" | tr "[:upper:]" "[:lower:]")"
+              case "$author" in
+                *arena-agent*|*arena-ai*|*arena.ai*)
+                  GIT_AUTHOR_NAME="$ARENA_FALLBACK_NAME"
+                  GIT_AUTHOR_EMAIL="$ARENA_FALLBACK_EMAIL"
+                  export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL ;;
+              esac
+              committer="$(printf %s "$GIT_COMMITTER_EMAIL" | tr "[:upper:]" "[:lower:]")"
+              case "$committer" in
+                *arena-agent*|*arena-ai*|*arena.ai*)
+                  GIT_COMMITTER_NAME="$ARENA_FALLBACK_NAME"
+                  GIT_COMMITTER_EMAIL="$ARENA_FALLBACK_EMAIL"
+                  export GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL ;;
+              esac
+            ' \
+            -- "${{ steps.check.outputs.range }}"
+          # filter-branch leaves the pre-rewrite refs lying around; they
+          # must never be pushed along with the branch.
+          git for-each-ref --format='%(refname)' refs/original/ | while read -r ref; do
+            git update-ref -d "$ref"
+          done
+
+      - name: Verify nothing Arena-flavoured is left
+        if: steps.check.outputs.dirty == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          range="${{ steps.check.outputs.range }}"
+          # Same range, re-based on the rewritten HEAD: if the range was
+          # <base>..HEAD the base is untouched by the rewrite, HEAD is not.
+          python3 scripts/strip_arena_coauthor.py --check-range "$range"
+          if git log --format='%an <%ae>%n%cn <%ce>' "$range" | grep -qi 'arena'; then
+            echo "::error::An Arena author/committer identity survived the rewrite."
+            exit 1
+          fi
+
+      - name: Force-push the rewritten branch
+        if: steps.check.outputs.dirty == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          old_sha="${{ steps.check.outputs.old_sha }}"
+          new_sha="$(git rev-parse HEAD)"
+          if [ "$old_sha" = "$new_sha" ]; then
+            echo "Rewrite produced identical history; skipping push."
+            exit 0
+          fi
+          git push --force-with-lease="refs/heads/${{ github.ref_name }}:$old_sha" \
+            origin "HEAD:refs/heads/${{ github.ref_name }}"
+          {
+            echo "### Done"
+            echo "Rewrote \`$old_sha\` -> \`$new_sha\` on \`${{ github.ref_name }}\`."
+            echo "Commit hashes changed: anyone with a local copy of this branch should run"
+            echo "\`git fetch && git reset --hard origin/${{ github.ref_name }}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  guard-protected:
+    name: Check only (default branch / pull request)
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'push' &&
+       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fail if Arena co-author attribution is present
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            range="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          elif [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            range="${{ github.event.before }}..${{ github.event.after }}"
+          else
+            range="${{ github.event.after }}"
+          fi
+          if python3 scripts/strip_arena_coauthor.py --check-range "$range" > offenders.txt; then
+            echo "No Arena co-author attribution found."
+            exit 0
+          fi
+          {
+            echo '### Arena AI is a co-author on these commits'
+            echo '```'
+            cat offenders.txt
+            echo '```'
+            echo 'This ref is never rewritten automatically (default branch,'
+            echo 'or a pull request that may come from a fork). Strip the'
+            echo '`Co-authored-by: arena-...` trailer on the branch before'
+            echo 'merging - a push to the branch will do it for you - with:'
+            echo '```bash'
+            echo "FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f \\"
+            echo "  --msg-filter 'python3 scripts/strip_arena_coauthor.py' \\"
+            echo "  -- origin/main..HEAD"
+            echo 'git push --force-with-lease'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::Arena co-author attribution found; see the job summary for how to strip it."
+          exit 1
