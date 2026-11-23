@@ -968,7 +968,12 @@ int main() {
     testTargetDescription();
     testValueClasses();
     testSelectionSubset();
+#if ZL_NATIVE_CAN_EXECUTE
+    // Defined in the guarded region above with its execution fixtures, so the
+    // call has to be guarded too: unguarded, a platform without executable
+    // memory (macOS) failed to build with "use of undeclared identifier".
     testReferencePassThrough();
+#endif
     testUnverifiedMirIsRefused();
     testNoEncoderIsSelectOnly();
 #if ZL_NATIVE_CAN_EXECUTE
