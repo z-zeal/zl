@@ -1,5 +1,64 @@
 # Development Checkpoints
 
+## 2026-11-22 - three readability fixes: field initializers, void values, and a stub that finally speaks
+
+An audit of the whole language surface against *readable, reliable, easy to code*
+found three defects where the compiler accepted a program and the failure arrived
+somewhere else - far from the line that caused it. All three are fixed, and all
+three now fail at the declaration.
+
+**Instance field initializers ran nowhere.** `public int x = 5` compiled to
+nothing on every path: `lowerStaticInitializers` (`src/mir/lowering.cpp`) and the
+field-init type check (`src/compiler/type_checker.cpp`) both `continue`d on
+`!field.isStatic`, and neither backend emitted a default. Every read saw the
+allocator's zero, so the bug was invisible unless the constructor happened to
+overwrite the field - `new C().x` printed `0` and `log` showed a plausible
+number. Initializers now run **before the constructor body, always**, including
+when the class declares a constructor of its own, which is the only case where
+the two orders are distinguishable. The order across `extends` is Java's: the
+base constructor (and the base's own initializers) completes, then this class's
+fields initialize in declaration order, then this class's body. That needed a
+second, hidden half of the same defect: the MIR path never ran a base
+constructor at all (`new Derived()` skipped `Base()`'s body entirely, while the
+reference AST path always injected the implicit `super()`), so
+`lowerImplicitSuperCall` now emits it, suppressed when the body already calls
+`super(...)` first - exactly as `Compiler::compile` does. An initializer may read
+`this` and call instance methods; it may not read the constructor's parameters,
+which are still not in scope (the checker says so, in both paths). A field
+declared without an initializer is left to the allocator's type zero rather than
+being overwritten with nil, and the initializer is now type-checked against the
+declared field type - `public int x = "oops"` was accepted and ran.
+
+**`var x = voidCall()` compiled.** A void expression produces no value, but the
+inferred-type branch of `checkVarDecl` bound one anyway, so `x` became a variable
+of type void: the program compiled, and every later read of `x` died in lowering
+as `unsupported reference to unbound local 'x'`, with the enclosing function
+stubbed - a diagnostic about the *use*, pointing away from the declaration. It is
+now a type error at the initializer, like the assignment and call-argument
+positions that already refuse void. Statement position (`obj.m()`) is unchanged.
+
+**A stubbed function's own message never arrived.** The MIR bytecode backend's
+fail-closed stub pushed a *string* and threw it, but the VM's `Throw` requires an
+`ObjectRef` - so reaching a stub reported `throw requires an Exception-derived
+object`, masking the text the backend had chosen (and the `stub:` ledger line
+above it was the only place it appeared). `Throw` now raises a thrown string as a
+`RuntimeError` carrying that text, and each untranslatable function gets its own
+stub naming itself and its reason instead of sharing one anonymous body, so the
+runtime error says which function was reached and why.
+
+Gates: `tests/zl/valid/core_tests/FieldInitializers.zl` (ordering, `this` in an
+initializer, the synthesized constructor, an uninitialized field, and the
+constructor overriding an initialized field - each asserted from inside the
+constructor by throwing), `tests/zl/invalid/type_errors/InstanceFieldInitTypeMismatch.zl`,
+`tests/zl/invalid/type_errors/VoidVariableInit.zl`, and the extended
+`IncompleteStubRefusal` fixture, which now catches the stub and requires its
+message to name the function. `scripts/run_regressions.sh` 97 passed / 0 failed
+(91 before the `zlpkg` target existed, which unlocks the six package-manager
+cases), `examples/run_all.sh` 52/52, `ctest` 44/44, `scripts/native_gate.sh`
+PASS, and the same 97 with `ZL_MIR_OPT_CHECK=1` (optimiser differential) and
+with `ZL_BACKEND=native`. All 52 examples also produce byte-identical stdout on
+the reference `ZL_COMPILER=ast` path.
+
 ## 2026-11-22 - P1-6, reference half begins: a managed reference can be carried, not used
 
 The native tier refused every `Reference` outright - `requireScalar` in

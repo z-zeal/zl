@@ -3241,6 +3241,93 @@ void collectWrittenLocals(const zl::AstNode* node, std::unordered_set<std::strin
     zl::forEachChild(node, [&](const zl::AstNode* child) { collectWrittenLocals(child, out); });
 }
 
+// The implicit `super()` a derived class's constructor runs before any of its
+// own statements, unless the body already calls super(...) as its first
+// statement (TypeChecker::checkFunctionDecl validated both that position and
+// that the parent has a no-arg constructor to receive it).
+void lowerImplicitSuperCall(FunctionLowerer& lowerer, const zl::FunctionDecl& function) {
+    auto& ctx = lowerer.ctx;
+    const std::string parent =
+        ctx.classParents.count(lowerer.ownerClass) ? ctx.classParents.at(lowerer.ownerClass) : std::string{};
+    if (parent.empty() || !function.body) return;
+    const auto& block = static_cast<const zl::BlockStmt&>(*function.body);
+    if (!block.statements.empty() && block.statements.front()->kind == zl::NodeKind::ExprStmt) {
+        const auto* first = static_cast<const zl::ExprStmt*>(block.statements.front().get());
+        if (first->expression && first->expression->kind == zl::NodeKind::SuperCallExpr) return;
+    }
+
+    const zl::DispatchSignature signature{parent, {}};
+    const FunctionId constructor = lowerer.lookupFunctionIn(parent, signature.describe());
+    if (constructor == kNoFunction) {
+        lowerer.unsupported(function.body.get(), "super constructor '" + parent + "." + signature.describe() +
+                                                 "' which was not lowered");
+        return;
+    }
+    const SourceLocation loc{function.sourceFile, static_cast<std::uint32_t>(function.line), 0};
+    const Operand self = lowerer.fb.parameterOperand(0);
+    // A constructor is an ordinary func whose first parameter is its receiver,
+    // so the implicit super() is a direct call carrying `this` as argument 0 -
+    // the same shape the explicit `super(...)` in superCall() emits. (InvokeSuper
+    // would take the receiver separately and count it as an argument.)
+    (void)lowerer.fb.emitCall(constructor, {self}, 0, loc,
+                              lowerer.typeArgumentsFor(constructor, self));
+}
+
+// Runs a constructor's own instance field initializers, in declaration order,
+// before its body. Statics are not touched: they belong to the class, not to
+// the instance, and are initialized lazily by their own generated function.
+void lowerInstanceFieldInitializers(FunctionLowerer& lowerer, const zl::FunctionDecl& function) {
+    auto& ctx = lowerer.ctx;
+    const zl::ClassDecl* owner = nullptr;
+    for (const auto& declaration : ctx.program.declarations) {
+        if (declaration->kind == zl::NodeKind::ClassDecl &&
+            static_cast<const zl::ClassDecl&>(*declaration).name == lowerer.ownerClass) {
+            owner = &static_cast<const zl::ClassDecl&>(*declaration);
+            break;
+        }
+    }
+    if (!owner) return;
+
+    for (const auto& member : owner->members) {
+        if (member->kind != zl::NodeKind::VarDecl) continue;
+        const auto& field = static_cast<const zl::VarDecl&>(*member);
+        if (field.isStatic) continue;
+        // A field declared without an initializer is left alone. Allocation has
+        // already installed its type's zero, and writing nil into a field with
+        // a concrete declared type - `public int x` - is exactly the kind of
+        // typed write the verifier refuses.
+        if (!field.initializer) continue;
+        const SourceLocation loc{field.sourceFile, static_cast<std::uint32_t>(field.line), 0};
+        // A closure in an initializer is a function like any other: it has to be
+        // declared before the body that mentions it is lowered.
+        collectLambdas(field.initializer.get(), ctx, lowerer.ownerClass, function.typeParams);
+
+        Operand value = lowerer.expression(field.initializer.get());
+        if (value.isNone()) return; // the initializer failed; the function is already incomplete
+
+        // The declared field type is what the layout pass recorded, so it is
+        // authoritative for a field the annotation left open (`unknown`).
+        TypeId fieldType = ctx.builder.types().unknownType();
+        if (const ClassLayout* layout = ctx.builder.module().classLayout(lowerer.ownerClass)) {
+            if (const FieldLayout* declared = layout->field(field.name)) fieldType = declared->type;
+        }
+        value = lowerer.coerce(value, fieldType, loc);
+        if (value.isNone()) return;
+
+        const Operand self = lowerer.fb.parameterOperand(0);
+        lowerer.fb.emitFieldStore(self, field.name, value, loc);
+    }
+}
+
+// See the call site in lowerFunctionBody: a constructor's prologue is the
+// implicit super call (when there is a parent) followed by this class's own
+// field initializers.
+void lowerInstanceInitialization(FunctionLowerer& lowerer, const zl::FunctionDecl& function) {
+    lowerImplicitSuperCall(lowerer, function);
+    if (lowerer.failed) return;
+    lowerInstanceFieldInitializers(lowerer, function);
+}
+
 void lowerFunctionBody(LoweringContext& ctx, const zl::FunctionDecl& function, const std::string& ownerClass) {
     const auto found = ctx.functionIds.find(ctx.qualifiedName(function));
     if (found == ctx.functionIds.end()) return;
@@ -3295,6 +3382,16 @@ void lowerFunctionBody(LoweringContext& ctx, const zl::FunctionDecl& function, c
         lowerer.bindLocalBoth(function.params[i].name, function.params[i].storageName,
                               LocalRef::slotRef(slot));
     }
+
+    // A constructor builds its object in Java's order: the parent constructor
+    // first (which initializes the parent's own fields and then runs the
+    // parent's body), then this class's instance field initializers in
+    // declaration order, then the body the user wrote. Both halves were missing
+    // here - an instance field initializer was never lowered at all, and a
+    // derived constructor never called its parent - so `public int x = 5`
+    // silently left the allocator's zero behind and a base constructor body
+    // never ran. The reference AST -> bytecode path has always done both.
+    if (function.isConstructor) lowerInstanceInitialization(lowerer, function);
 
     if (function.body) lowerer.statement(function.body.get());
 

@@ -2262,14 +2262,25 @@ void TypeChecker::checkClassDecl(const ClassDecl* node) {
     for (const auto& member : node->members) {
         if (member->kind == NodeKind::VarDecl) {
             const auto* field = static_cast<const VarDecl*>(member.get());
-            if (!field->isStatic) continue;
             if (field->initializer) {
+                // A field initializer is an ordinary expression in its field's
+                // context: `this` means the instance being built for an instance
+                // field, and is refused in a static one. currentFunctionIsStatic_
+                // is whatever the previously checked member left behind, so it
+                // is set here rather than inherited - otherwise a `this` in an
+                // instance initializer would be judged by an unrelated static
+                // func that happened to be checked first.
+                const bool previousFunctionIsStatic = currentFunctionIsStatic_;
+                currentFunctionIsStatic_ = field->isStatic;
                 const InferredType init = inferExpr(field->initializer.get());
+                currentFunctionIsStatic_ = previousFunctionIsStatic;
                 if (field->hasExplicitType) {
                     std::string declaredClassName;
                     const ZlType declaredType = resolveType(field->type, &declaredClassName);
                     if (!isAssignable(init.type, declaredType, init.className, declaredClassName)) {
-                        typeError("cannot initialize static field '" + node->name + "." + field->name + "' with " + zlTypeName(init.type), field->line);
+                        typeError("cannot initialize " + std::string(field->isStatic ? "static " : "instance ") +
+                                  "field '" + node->name + "." + field->name + "' with " + zlTypeName(init.type),
+                                  field->line);
                     }
                 }
             }
@@ -2944,6 +2955,18 @@ void TypeChecker::checkVarDecl(const VarDecl* node) {
             hasInitializer = true;
             initType = initResult.type;
             initClassName = initResult.className;
+            // A void expression produces no value, so there is nothing to bind.
+            // Accepting it made `var x = voidCall()` a variable of type void:
+            // it compiled, and every later read of `x` died in lowering as a
+            // reference to an unbound local - a message about the USE rather
+            // than about the declaration that caused it. `obj.m()` as a
+            // statement is still fine; that is expression-statement position,
+            // not a value position.
+            if (initType == ZlType::VOID_TYPE) {
+                typeError("cannot initialize variable '" + node->name +
+                          "' with a void expression (it produces no value)",
+                          node->initializer->line);
+            }
         }
         if (initResult.ownership == OwnershipKind::BORROW) {
             typeError("borrowed values require an explicit 'borrow' declaration for '" + node->name + "'", node->line);

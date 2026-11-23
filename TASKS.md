@@ -53,6 +53,15 @@ parameter and the legacy IR folder's six-decimal double round-trip (both closed
 closed 2026-09-18 while writing the `Condition` fixture below) - are in
 [Done](#done) and [docs/changelog.md](docs/changelog.md).
 
+A full-surface audit against *readable, reliable, easy to code* (2026-11-22)
+found three more, all closed the same day and all in this category: instance
+field initializers that no path ran, `var x = voidCall()` binding a variable of
+type void, and a stubbed function whose own refusal text the VM masked. The
+audit's remaining observations - `this` in `main`, `for` being range-only,
+scientific literals the printer emits but the lexer refuses, and the ergonomic
+syntax the guide does not promise - are not tracked here yet; the three fixes
+are in [docs/changelog.md](docs/changelog.md).
+
 ---
 
 ## P1 - promised capability, or a daily gap

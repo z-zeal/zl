@@ -112,6 +112,18 @@ inherited access works from subclasses, private inherited access is rejected, an
 interface-qualified static-field access is rejected because interfaces own no static
 storage.
 
+**Instance field initializers run before the constructor body, always.** A field may
+carry its own initial value — `public int retries = 3` — and that value is in place
+before the constructor's first statement executes, including when the class declares a
+constructor of its own. The order across `extends` is base first: the base constructor
+(and with it the base's own field initializers) completes, then this class's fields
+initialize in declaration order, then this class's constructor body. An initializer may
+read `this` and call instance methods, but not the constructor's parameters — they are
+not in scope yet. A field declared without an initializer is left alone and keeps the
+type's zero value the allocator installs (`0`, `0.0`, `false`, `""`, the first `enum`
+member, nil for reference types). The initializer is checked against the field's
+declared type, so `public int x = "oops"` is a compile error.
+
 ## String methods
 
 A `string` has methods, and every one of them is an existing `String.*` native

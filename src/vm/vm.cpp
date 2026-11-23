@@ -1421,6 +1421,18 @@ VM::ExecuteStatus VM::execute(const Chunk& chunk, std::size_t startIp, bool stop
 
             case OpCode::Throw: {
                 Value thrown = state_.pop();
+                // A bare string can only come from a backend's fail-closed stub
+                // (a function it could not translate): source-level `throw` is
+                // always an Exception-derived object, because the type checker
+                // enforces that. Raise the stub's own text as a RuntimeError so
+                // the refusal that was already reported at compile time is also
+                // what the program sees - throwing a std::runtime_error here
+                // used to surface as "throw requires an Exception-derived
+                // object", masking the message entirely.
+                if (std::holds_alternative<std::string>(thrown)) {
+                    throw ZlThrownException(makeRuntimeExceptionObject("RuntimeError",
+                        std::get<std::string>(thrown), &chunk, &state_, "at <runtime>"));
+                }
                 if (!std::holds_alternative<ObjectRef>(thrown) || !std::get<ObjectRef>(thrown)) {
                     throw std::runtime_error("throw requires an Exception-derived object");
                 }

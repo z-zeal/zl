@@ -1,0 +1,77 @@
+// ============================================================================
+// Regression fixture - valid/core_tests - FieldInitializers
+//
+// An instance field initializer runs BEFORE the constructor body, always -
+// including when the class declares a constructor of its own. The two orders
+// are otherwise indistinguishable only when the body never reads the field,
+// which is exactly how this silently regressed: `public int x = 5` compiled to
+// nothing at all, so every read saw the zero the allocator left behind.
+//
+// The order across `extends` is Java/C#: the base constructor (and with it the
+// base's own field initializers) completes before the derived class's
+// initializers run, which complete before the derived body starts. Each class
+// here asserts that from the inside, by throwing if the field it expects is
+// not already there - so the fixture fails loudly rather than printing a
+// plausible-looking zero.
+//
+// Also covered: a class that declares no constructor still initializes its
+// fields (the parser synthesizes the no-arg one), an initializer may be an
+// arbitrary expression - including one that reads an earlier field through
+// `this` - and a field declared without an initializer keeps the allocator's
+// type default rather than being overwritten with nil.
+// ============================================================================
+
+class FieldInitBase {
+    public int x = 5
+    public string label = "base"
+    public int doubled = this.x * 2
+
+    func FieldInitBase() {
+        // Both initializers have already run by the time the body starts.
+        if (this.x != 5) { throw new Exception("int initializer did not run before the constructor body") }
+        if (this.label != "base") { throw new Exception("string initializer did not run before the constructor body") }
+        if (this.doubled != 10) { throw new Exception("initializer could not see an earlier field of the same object") }
+        // The body may still override an initialized field - that is the point
+        // of running the initializer first.
+        this.x = 10
+    }
+
+    public func getX(): int { return this.x }
+    public func getLabel(): string { return this.label }
+    public func getDoubled(): int { return this.doubled }
+}
+
+class FieldInitDerived extends FieldInitBase {
+    public int y = 7
+
+    func FieldInitDerived() {
+        if (this.y != 7) { throw new Exception("derived initializer did not run before the derived constructor body") }
+        // The base constructor body ran first and set x to 10.
+        if (this.x != 10) { throw new Exception("base constructor body did not run before the derived initializer") }
+    }
+}
+
+class FieldInitImplicit {
+    public int answer = 40 + 2
+    public string unset
+}
+
+class FieldInitializers {
+    func main(): void {
+        var base = new FieldInitBase()
+        log(base.getX())       // 10 - the body overrode the initializer
+        log(base.getLabel())    // base
+        log(base.getDoubled())  // 10 - initializer saw the field's own value
+
+        var derived = new FieldInitDerived()
+        log(derived.getX())     // 10 - base initializer, base body, then derived
+        log(derived.y)          // 7  - derived initializer
+
+        // No constructor declared: the synthesized one still initializes.
+        var implicit = new FieldInitImplicit()
+        log(implicit.answer)    // 42
+        // A field with no initializer is left to the allocator's type default.
+        if (implicit.unset != "") { throw new Exception("an uninitialized string field must keep its type default") }
+        log(implicit.unset)     // (empty)
+    }
+}

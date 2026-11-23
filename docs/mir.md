@@ -548,6 +548,18 @@ Notable choices:
   declared as a template over the same parameters its owner class has; without
   that, the captured `this: Box<T>` is a type parameter in a concrete function
   and the verifier rejects it.
+- **A constructor's prologue runs before its body, in Java's order.** A derived
+  class's constructor first makes the implicit `super()` call the reference
+  compiler has always emitted — a direct `Call` to the parent's no-arg
+  constructor carrying `this` as argument 0, suppressed when the body already
+  calls `super(...)` as its first statement — then stores this class's own
+  instance field initializers in declaration order, then lowers the body. A
+  field declared without an initializer is skipped, not defaulted: the runtime
+  already installs the declared type's zero at allocation, and writing nil into
+  a concretely typed field is the kind of store the verifier refuses. Only the
+  class's *own* fields are stored here; a base class's fields are its own
+  constructor's prologue, which is what makes the base-first order fall out
+  rather than being special-cased.
 - **`coerce()` makes implicit conversions explicit.** Where the result type is
   `double` and an operand is `int`, a `Widen` is emitted, so MIR arithmetic is
   homogeneous and a backend never has to re-derive the promotion rule. Where

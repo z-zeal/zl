@@ -1,0 +1,18 @@
+// Regression fixture - invalid/type_errors - InstanceFieldInitTypeMismatch
+//
+// An instance field initializer is a typed write to a declared field, so it is
+// checked against the field's declared type exactly like a static field's
+// initializer is. `public int x = "oops"` used to compile and run, leaving the
+// field holding whatever the allocator zero-filled - a silent lie about the
+// type of every later read.
+//
+// The static spelling of the same mistake is already rejected; this asserts the
+// instance spelling is too, so the two cannot drift apart.
+
+class InstanceFieldInitTypeMismatch {
+    public int x = "oops"
+
+    func main(): void {
+        log(new InstanceFieldInitTypeMismatch().x)
+    }
+}
