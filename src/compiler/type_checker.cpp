@@ -2619,7 +2619,7 @@ void TypeChecker::checkStatement(const AstNode* node) {
         case NodeKind::LogStmt:      checkLogStmt(static_cast<const LogStmt*>(node)); return;
         case NodeKind::LogExpr: {
             const auto* n = static_cast<const LogExpr*>(node);
-            if (n->argument) (void)inferExpr(n->argument.get());
+            checkLogArgument(n->argument.get());
             return;
         }
         case NodeKind::IfStmt:       checkIfStmt(static_cast<const IfStmt*>(node)); return;
@@ -3125,8 +3125,22 @@ void TypeChecker::validateFunctionArguments(const std::string& calleeName, const
     }
 }
 
+void TypeChecker::checkLogArgument(const AstNode* argument) {
+    if (!argument) return; // `log()` with nothing to print is allowed
+    const InferredType value = inferExpr(argument);
+    // `log` is a builtin, not an overload-resolved method, so unlike a call
+    // argument nothing else refuses a void here: `log(obj.m())` was accepted,
+    // printed nothing at all on the MIR path and `nil` on the reference path -
+    // the two compilers disagreeing about a program that silently does
+    // nothing. It is a value position like any other.
+    if (value.type == ZlType::VOID_TYPE) {
+        typeError("log() requires a value to print, not a void expression (it produces no value)",
+                  argument->line);
+    }
+}
+
 void TypeChecker::checkLogStmt(const LogStmt* node) {
-    if (node->argument) (void)inferExpr(node->argument.get());
+    checkLogArgument(node->argument.get());
 }
 
 std::optional<std::string> TypeChecker::borrowRootOwner(const std::string& name) const {
@@ -3781,7 +3795,7 @@ TypeChecker::InferredType TypeChecker::inferExprInner(const AstNode* node) {
         case NodeKind::MatchExpr:         return inferMatchExpr(const_cast<MatchExpr*>(static_cast<const MatchExpr*>(node)));
         case NodeKind::LogExpr: {
             const auto* n = static_cast<const LogExpr*>(node);
-            if (n->argument) (void)inferExpr(n->argument.get());
+            checkLogArgument(n->argument.get());
             return InferredType(ZlType::VOID_TYPE);
         }
         default:
@@ -4597,6 +4611,19 @@ TypeChecker::InferredType TypeChecker::inferBinary(const BinaryExpr* node) {
         // all other operators on objects must be explicitly declared.
         if (node->op != TokenType::EQ && node->op != TokenType::NEQ) {
             typeError("class '" + leftClass + "' has no operator '" + OperatorRules::methodName(operatorFromToken(node->op)) + "'", node->line);
+        }
+    }
+
+    // `&&` and `||` are the one operator whose result type the rules table
+    // fixes without looking at its operands - every other operator derives its
+    // result from them - so without a check here a void operand passed the
+    // checker and only blew up later as an unlowerable condition, and the
+    // reference path silently coerced `1 && 2` to `true` while this path
+    // refused it. Require what the runtime requires: bool operands.
+    if (node->op == TokenType::AND || node->op == TokenType::OR) {
+        if (left != ZlType::BOOL || right != ZlType::BOOL) {
+            typeError("operator '" + std::string(node->op == TokenType::AND ? "&&" : "||") +
+                      "' requires bool operands", node->line);
         }
     }
 

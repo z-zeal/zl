@@ -1,0 +1,16 @@
+// Regression fixture - invalid/type_errors - LogicalOrOperands
+//
+// The `||` half of the same gap LogicalAndOperands.zl covers: the operator's
+// result type was fixed without inspecting its operands, so a non-bool operand
+// was accepted by the checker and refused later - or, on the reference path,
+// silently coerced. Both `&&` and `||` now require bool operands.
+
+class LogicalOrOperands {
+    public func probe(): void {
+        if (true || 2) { log("wrong") }
+    }
+
+    func main(): void {
+        new LogicalOrOperands().probe()
+    }
+}

@@ -1,5 +1,31 @@
 # Development Checkpoints
 
+## 2026-11-22 - two more void holes: `log(voidCall())` and `&&`/`||` operands
+
+The same audit's "void used as a value" family had two members the first pass
+missed, both found while verifying it.
+
+**`log(obj.m())` was accepted.** `log` is a builtin, not an overload-resolved
+method, so unlike a call argument nothing refused a void: it printed *nothing
+at all* on the MIR path and `nil` on the reference path — a program that
+silently does nothing, with the two compilers disagreeing about what it does.
+`checkLogArgument` now funnels every spelling of `log` (statement, expression,
+and the expression form's own inference) through one void check. `log()` with no
+argument is still allowed.
+
+**`&&` and `||` accepted any operand.** They were the one operator whose result
+type `OperatorRules::binaryResult` fixed without inspecting its operands, so
+`true && voidCall()` passed the checker and only blew up in lowering as an
+unlowerable condition, and `1 && 2` was refused by the MIR path but silently
+evaluated to `true` on the reference path — one source program, two meanings.
+`inferBinary` now requires bool operands, which is what the runtime already
+required. Every `&&`/`||` in the stdlib, the examples and the regression corpus
+was already bool, so nothing that worked changed.
+
+Gates: `tests/zl/invalid/type_errors/VoidLogArgument.zl`,
+`LogicalAndOperands.zl`, `LogicalOrOperands.zl` — each a clean compile error on
+both the MIR and reference paths.
+
 ## 2026-11-22 - three readability fixes: field initializers, void values, and a stub that finally speaks
 
 An audit of the whole language surface against *readable, reliable, easy to code*

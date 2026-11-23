@@ -91,6 +91,9 @@ up.
 only `==` and `!=` do. (Comparison fails at runtime inside `sort` comparators, not at
 compile time — compare with an explicit key or `String.compare` instead.)
 
+**`&&` and `||` require `bool` operands.** They are not truthiness tests: `1 && 2`
+is a compile error, not `true`. Compare first (`n != 0 && ...`).
+
 **Integer arithmetic is checked, except bit operations.** `+`, `-`, `*`, `/`, `%`,
 and unary `-` on `int` raise a runtime error on overflow, and `/`/`%` also reject a
 zero divisor (including `INT64_MIN / -1`). Division by zero is an error even for

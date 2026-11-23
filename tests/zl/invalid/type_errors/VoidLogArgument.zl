@@ -1,0 +1,23 @@
+// Regression fixture - invalid/type_errors - VoidLogArgument
+//
+// `log` is a builtin, not an overload-resolved method, so unlike a call
+// argument nothing refused a void here: `log(obj.m())` was accepted, printed
+// nothing at all on the MIR path and `nil` on the reference path. A program
+// that silently does nothing, with the two compilers disagreeing about what it
+// does, is the worst of the three outcomes.
+//
+// A void expression is not a value, so it is not something to print - the same
+// rule the variable-initializer, assignment and call-argument positions
+// already apply. `log()` with no argument is still allowed.
+
+class VoidLogArgument {
+    public func nothing(): void { }
+
+    public func probe(): void {
+        log(this.nothing())
+    }
+
+    func main(): void {
+        new VoidLogArgument().probe()
+    }
+}

@@ -243,6 +243,10 @@ private:
     void checkThrowStmt(const ThrowStmt* node);
     void checkExprStmt(const ExprStmt* node);
     void checkLogStmt(const LogStmt* node);
+    // `log(x)` in every position - statement, expression, and the expression
+    // form's own inference - funnels through here, so the argument is checked
+    // once. A void argument is not a value to print.
+    void checkLogArgument(const AstNode* argument);
 
 
     // --- expressions: returns the inferred type and its object identity ---
