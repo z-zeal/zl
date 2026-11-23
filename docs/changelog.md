@@ -1,5 +1,35 @@
 # Development Checkpoints
 
+## 2026-11-22 - P1-6, reference half begins: a managed reference can be carried, not used
+
+The native tier refused every `Reference` outright - `requireScalar` in
+`src/native/select.cpp` turned a reference parameter, local or return value
+into a per-function refusal ("the native tier has no GC map yet"). That was the
+right call when a reference could not be traced at all, and it is now too
+narrow: the tier cannot allocate and cannot call the runtime, so no collection
+can run while a native frame is live, and a reference the tier only *carries*
+is therefore safe. Selection now draws the line at *use*: a reference may be a
+parameter, a local slot, a block parameter, a return value, a call argument or
+a call result - moved, stored, loaded, handed back - and every opcode that
+would use one is still refused by name (equality and concatenation in
+`selectBinary`, negation, string/null constants, static fields, and the
+default arm for field access, method calls and everything else). The emitter
+already moved a non-float class through the integer path, so no byte changed;
+`FrameSlotInfo::isReference` now marks a slot that exists for the frame map
+rather than one that can never be created.
+
+The driver still refuses a signature that carries a reference, for a different
+reason than selection did: `--run-native` can pass `--int64` and `--double`, and
+a managed reference cannot be invented from a command line. Growing that -
+exporting the frame map, computing the GC map at call sites, making allocation
+real, publishing roots - is planned with gates in
+[docs/native-gc-map.md](../docs/native-gc-map.md).
+
+Gates: `testReferencePassThrough` in `tests/native_backend_tests.cpp` -
+`identity`, `viaSlot` and `wrap` compile, emit, are mapped executable and
+round-trip a pointer unchanged, while `same` (reference equality) is refused
+with a reason. `zl-native-backend-tests` and `zl-native-exec-tests` pass.
+
 ## 2026-09-20 - P1-6 continues: the execution driver learns its second calling shape
 
 `--run-native` covered one signature today: all-integer in, all-integer out.

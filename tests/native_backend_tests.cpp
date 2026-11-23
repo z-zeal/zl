@@ -358,6 +358,82 @@ Module buildStringFunction() {
     return builder.take();
 }
 
+// string identity(string s) { return s } - a reference moved straight through.
+// Nothing is done *to* the reference; it is only carried. That is the whole of
+// this increment: a managed pointer the tier can hold and hand back without
+// the collector ever needing to see it, because the tier cannot allocate and
+// cannot call into the runtime.
+Module buildRefIdentity() {
+    ModuleBuilder builder("refidentity");
+    const auto stringType = builder.types().stringType();
+    auto fn = builder.addFunction("identity");
+    const auto s = fn.addParameter("s", stringType);
+    fn.setReturnType(stringType);
+    const auto entry = fn.addBlock();
+    fn.setCurrentBlock(entry);
+    fn.emitReturn(fn.parameterOperand(s));
+    return builder.take();
+}
+
+// string viaSlot(string s) { var t = s; return t } - a reference through a
+// frame slot, which is where a future GC map will have to look.
+Module buildRefSlot() {
+    ModuleBuilder builder("refslot");
+    const auto stringType = builder.types().stringType();
+    auto fn = builder.addFunction("viaSlot");
+    const auto s = fn.addParameter("s", stringType);
+    fn.setReturnType(stringType);
+    const auto t = fn.addSlot("t", stringType);
+    const auto entry = fn.addBlock();
+    fn.setCurrentBlock(entry);
+    fn.emitStore(t, fn.parameterOperand(s));
+    const auto loaded = fn.emitLoad(t);
+    fn.emitReturn(Operand::temp(loaded, stringType));
+    return builder.take();
+}
+
+// string wrap(string s) { return identity(s) } - a reference passed through a
+// native call to another native function.
+Module buildRefCaller() {
+    ModuleBuilder builder("refcaller");
+    const auto stringType = builder.types().stringType();
+    const FunctionId calleeId = [&] {
+        auto fn = builder.addFunction("identity");
+        const auto s = fn.addParameter("s", stringType);
+        fn.setReturnType(stringType);
+        const auto entry = fn.addBlock();
+        fn.setCurrentBlock(entry);
+        fn.emitReturn(fn.parameterOperand(s));
+        return fn.function().id;
+    }();
+    auto caller = builder.addFunction("wrap");
+    const auto s = caller.addParameter("s", stringType);
+    caller.setReturnType(stringType);
+    const auto entry = caller.addBlock();
+    caller.setCurrentBlock(entry);
+    const auto call = caller.emitCall(calleeId, {caller.parameterOperand(s)}, stringType);
+    caller.emitReturn(Operand::temp(call, stringType));
+    return builder.take();
+}
+
+// bool same(string a, string b) { return a == b } - a reference *use*, not a
+// move. Equality on a managed value is runtime work (it may walk a collection),
+// so it stays outside the subset even once carrying a reference is allowed.
+Module buildRefComparison() {
+    ModuleBuilder builder("refcmp");
+    const auto stringType = builder.types().stringType();
+    const auto boolType = builder.types().boolType();
+    auto fn = builder.addFunction("same");
+    const auto a = fn.addParameter("a", stringType);
+    const auto b = fn.addParameter("b", stringType);
+    fn.setReturnType(boolType);
+    const auto entry = fn.addBlock();
+    fn.setCurrentBlock(entry);
+    const auto eq = fn.emitBinary(Opcode::Eq, fn.parameterOperand(a), fn.parameterOperand(b), boolType);
+    fn.emitReturn(Operand::temp(eq, boolType));
+    return builder.take();
+}
+
 void testSelectionSubset() {
     {
         auto result = compile(buildIntArith());
@@ -500,6 +576,90 @@ void testExecution() {
         if (buffer.ok()) {
             auto* caller = entryPoint<std::int64_t(std::int64_t)>(buffer, "caller");
             require(caller != nullptr && caller(5) == 16, "caller(5) == callee(5) + 1 == 16");
+        }
+    }
+}
+
+// The subset boundary for references: carrying one is in, using one is out.
+// The three "in" shapes are a parameter, a frame slot, and a call argument;
+// the "out" shape is an operation that would need the runtime (equality on a
+// managed value). Each is asserted on its own so a regression cannot hide
+// behind a neighbour.
+void testReferencePassThrough() {
+    {
+        auto result = compile(buildRefIdentity());
+        require(result.ok(), "a reference parameter and result compile: " + result.error);
+        require(lowered(result, "identity"), "identity is in the native subset");
+        require(result.lir.functions.size() == 1, "one native function");
+        if (!result.lir.functions.empty()) {
+            const auto& fn = result.lir.functions.front();
+            require(fn.parameterClasses.size() == 1 &&
+                        fn.parameterClasses[0] == ValueClass::Reference,
+                    "the parameter is classified as a reference, not an integer");
+            require(fn.returnClass == ValueClass::Reference,
+                    "the result is classified as a reference");
+        }
+    }
+    {
+        auto result = compile(buildRefSlot());
+        require(result.ok(), "a reference through a frame slot compiles: " + result.error);
+        require(lowered(result, "viaSlot"), "viaSlot is in the native subset");
+        if (!result.lir.functions.empty()) {
+            const auto& fn = result.lir.functions.front();
+            bool refSlot = false;
+            for (const auto& slot : fn.slots)
+                if (slot.isReference) refSlot = true;
+            require(refSlot, "the reference slot is marked for the frame's GC map");
+        }
+    }
+    {
+        auto result = compile(buildRefCaller());
+        require(result.ok(), "a reference passed through a call compiles: " + result.error);
+        require(lowered(result, "identity") && lowered(result, "wrap"),
+                "both the callee and its caller are native");
+    }
+    {
+        auto result = compile(buildRefComparison());
+        require(result.ok(), "a module with an unsupported reference use is not an error");
+        require(rejected(result, "same"),
+                "a reference *use* (equality) is still refused, not guessed at");
+        require(!result.vmFunctions.empty() && !result.vmFunctions.front().reason.empty(),
+                "the refusal names its reason");
+    }
+    if (hostTarget().encoderAvailable()) {
+        const char* payload = "payload";
+        {
+            auto result = compile(buildRefIdentity());
+            require(result.ok() && !result.code.empty(), "identity emitted code: " + result.error);
+            ExecutableBuffer buffer(result.code);
+            require(buffer.ok(), "identity mapped executable");
+            if (buffer.ok()) {
+                auto* identity = entryPoint<const char*(const char*)>(buffer, "identity");
+                require(identity != nullptr && identity(payload) == payload,
+                        "a reference round-trips through native code unchanged");
+            }
+        }
+        {
+            auto result = compile(buildRefSlot());
+            require(result.ok() && !result.code.empty(), "viaSlot emitted code: " + result.error);
+            ExecutableBuffer buffer(result.code);
+            require(buffer.ok(), "viaSlot mapped executable");
+            if (buffer.ok()) {
+                auto* viaSlot = entryPoint<const char*(const char*)>(buffer, "viaSlot");
+                require(viaSlot != nullptr && viaSlot(payload) == payload,
+                        "a reference stored and reloaded in a frame slot round-trips");
+            }
+        }
+        {
+            auto result = compile(buildRefCaller());
+            require(result.ok() && !result.code.empty(), "wrap emitted code: " + result.error);
+            ExecutableBuffer buffer(result.code);
+            require(buffer.ok(), "wrap mapped executable");
+            if (buffer.ok()) {
+                auto* wrap = entryPoint<const char*(const char*)>(buffer, "wrap");
+                require(wrap != nullptr && wrap(payload) == payload,
+                        "a reference passed through a native call round-trips");
+            }
         }
     }
 }
@@ -808,6 +968,7 @@ int main() {
     testTargetDescription();
     testValueClasses();
     testSelectionSubset();
+    testReferencePassThrough();
     testUnverifiedMirIsRefused();
     testNoEncoderIsSelectOnly();
 #if ZL_NATIVE_CAN_EXECUTE

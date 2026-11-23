@@ -47,7 +47,6 @@ public:
         // The whole point of the pipeline: every fact below is read out of the
         // verified MIR. Nothing consults the AST or the type checker.
         lir_.returnClass = classify(fn_.returnType);
-        requireScalar(lir_.returnClass, "return value", fn_.location);
 
         for (const auto& block : fn_.blocks)
             if (!block.exceptionHandlers.empty())
@@ -69,10 +68,14 @@ private:
 
     ValueClass classify(std::uint32_t typeId) const { return classifyType(mir_, typeId); }
 
-    void requireScalar(ValueClass cls, const std::string& what, const SourceLocation& loc) {
-        if (cls == ValueClass::Reference)
-            refuse(what + " is a managed reference; the native tier has no GC map yet", loc);
-    }
+    // A reference is carried, never used. It may appear anywhere a value is
+    // only moved - a parameter, a local, a block parameter, a return value, a
+    // call argument or a call result - and every opcode that would *use* one
+    // is refused where it is selected (see selectBinary, Neg, and the default
+    // arm of selectInstruction). That is safe because this tier cannot
+    // allocate and cannot call the runtime, so no collection can run while a
+    // native frame is live; the day either of those changes, the frame GC map
+    // becomes mandatory and this comment moves with it.
 
     // --- declarations -----------------------------------------------------
 
@@ -105,7 +108,6 @@ private:
         for (std::size_t i = 0; i < fn_.parameters.size(); ++i) {
             const Parameter& p = fn_.parameters[i];
             const ValueClass cls = classify(p.type);
-            requireScalar(cls, "parameter '" + p.name + "'", p.location);
             if (cls == ValueClass::Void) refuse("void parameter", p.location);
             if (p.ownership != zl::OwnershipKind::GC)
                 refuse("parameter '" + p.name + "' has a non-GC ownership contract the native tier cannot honour",
@@ -134,7 +136,6 @@ private:
         for (std::size_t i = 0; i < fn_.slots.size(); ++i) {
             const Slot& s = fn_.slots[i];
             const ValueClass cls = classify(s.type);
-            requireScalar(cls, "local '" + s.name + "'", s.location);
             if (s.ownership != zl::OwnershipKind::GC)
                 refuse("local '" + s.name + "' has a non-GC ownership contract", s.location);
             // MIR slot ids are 1-based and positional.
@@ -157,7 +158,6 @@ private:
             // the copies are real instructions that belong in the CFG.
             for (const auto& p : b.parameters) {
                 const ValueClass cls = classify(p.type);
-                requireScalar(cls, "block parameter '" + p.name + "'", p.location);
                 blockParamVReg_[p.id] = newVReg(cls, p.name.empty() ? "phi" : p.name);
             }
         }
@@ -392,7 +392,6 @@ private:
         std::size_t intUsed = 0, floatUsed = 0;
         for (const auto& arg : ins.operands) {
             const ValueClass cls = classOf(arg);
-            requireScalar(cls, "call argument", ins.location);
             if (cls == ValueClass::Float) {
                 if (++floatUsed > cc.floatArgRegs.size()) refuse("too many float arguments", ins.location);
             } else {
@@ -403,7 +402,6 @@ private:
         }
 
         const ValueClass resultClass = classify(ins.resultType);
-        requireScalar(resultClass, "call result", ins.location);
         if (ins.result != kNoTemp) {
             call.result = newVReg(resultClass, "t" + std::to_string(ins.result));
             call.resultClass = resultClass;
@@ -465,7 +463,6 @@ private:
                 ret.line = line;
                 if (!term.value.isNone()) {
                     const ValueClass cls = classOf(term.value);
-                    requireScalar(cls, "returned value", term.location);
                     ret.operands = {inRegister(out, use(term.value, term.location), cls, line)};
                 }
                 out.instructions.push_back(std::move(ret));
