@@ -9,7 +9,10 @@
 // void return / skipped side effects, faulting far-away caller contracts or
 // silently dropping work). Now the backend stubs incomplete functions: the
 // refusal names the function and reason at compile time, and reaching the
-// stub raises at runtime before any of the body runs.
+// stub raises at runtime before any of the body runs - carrying the stub's
+// own message, which names the function it stands in for. (The stub pushes a
+// string and throws it; the VM used to reject that with "throw requires an
+// Exception-derived object", so the text the backend chose never arrived.)
 //
 // The truncated function lives in this case's helper module (Box.zl, sibling
 // of the entry): one primary type per file, imported by name.
@@ -21,14 +24,24 @@ class IncompleteStubRefusal {
     func main(): void {
         var box = new Box<int>()
         var raised = false
+        var message = ""
         try {
             box.bump(21)
         } catch Exception e {
             raised = true
+            message = e.message
         }
         if (!raised) { throw new Exception("IncompleteStubRefusal: truncated body ran silently (calls=" + box.calls + ")") }
         // The refusal happens before the body runs: no partial side effects.
         if (box.calls != 0) { throw new Exception("IncompleteStubRefusal: partial body ran (calls=" + box.calls + ")") }
+        // The refusal names itself. It must say the function was not
+        // translatable, and which function - not a message about the throw.
+        if (!message.contains("not translatable")) {
+            throw new Exception("IncompleteStubRefusal: stub message was: " + message)
+        }
+        if (!message.contains("Box.bump")) {
+            throw new Exception("IncompleteStubRefusal: stub message did not name the function: " + message)
+        }
         log("ok")
     }
 }

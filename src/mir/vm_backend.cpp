@@ -137,12 +137,13 @@ public:
                 }
             }
 
-            // A single shared stub for every function this backend could not
-            // translate. Reaching it is a loud runtime error, never silence.
-            const std::size_t stubAddress = chunk_.code.size();
-            emitStub();
+            // A stub for every function this backend could not translate, each
+            // pointing at its own body so reaching one says which function it
+            // was. Reaching a stub is a loud runtime error, never silence.
             for (std::size_t i = 0; i < module_.functions.size(); ++i) {
-                if (!fnInfo_[i].supported) chunk_.functions[i].entryAddress = stubAddress;
+                if (fnInfo_[i].supported) continue;
+                chunk_.functions[i].entryAddress = chunk_.code.size();
+                emitStub(module_.functions[i].name, fnInfo_[i].unsupportedReason);
             }
 
             // Program entry.
@@ -1897,13 +1898,18 @@ private:
     }
 
     // ---- stub + entry -----------------------------------------------------
-    void emitStub() {
+    // One stub per untranslatable function, each naming the function it stands
+    // in for and the reason it could not be translated. Reaching one raises a
+    // RuntimeError carrying exactly this text (the VM turns a thrown string
+    // into one), so the refusal the compiler already reported is also what the
+    // program sees - rather than a message about the throw itself.
+    void emitStub(const std::string& functionName, const std::string& reason) {
         const std::size_t line = 0;
-        const std::size_t msg = addConst(Value(std::string(
-            "MIR backend: function not translatable by this backend (unsupported construct)")));
+        std::string message = "MIR backend: function '" + functionName +
+                              "' is not translatable by this backend (unsupported construct)";
+        if (!reason.empty()) message += ": " + reason;
+        const std::size_t msg = addConst(Value(std::move(message)));
         emitGlobal(OpCode::PushConst, msg, line);
-        // Throwing a non-object is a loud runtime error, which is what we want
-        // if a stubbed function is ever actually reached.
         emitGlobal(OpCode::Throw, 0, line);
     }
 

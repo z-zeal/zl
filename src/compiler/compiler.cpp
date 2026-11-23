@@ -289,6 +289,34 @@ Chunk Compiler::compile(const Program& program) {
             }
         }
 
+        // Instance field initializers run before the constructor body, always -
+        // including when the class declares a constructor of its own, which is
+        // the only way they are distinguishable from a default the allocator
+        // already produced. SetField is an assignment form ((object, value) ->
+        // (value)), so the value it leaves behind is popped straight back off.
+        if (fn->isConstructor) {
+            for (const auto& decl : program.declarations) {
+                if (decl->kind != NodeKind::ClassDecl) continue;
+                const auto* cls = static_cast<const ClassDecl*>(decl.get());
+                if (cls->name != fn->ownerClassName) continue;
+                for (const auto& member : cls->members) {
+                    if (member->kind != NodeKind::VarDecl) continue;
+                    const auto* field = static_cast<const VarDecl*>(member.get());
+                    if (field->isStatic) continue;
+                    // A field declared without an initializer is left alone: the
+                    // allocator has already installed its type's zero, and
+                    // writing nil into a field with a concrete declared type
+                    // would assert a lie.
+                    if (!field->initializer) continue;
+                    emit(OpCode::LoadVar, chunk_.addName("this"), field->line);
+                    compileExpression(field->initializer.get());
+                    emit(OpCode::SetField, chunk_.addName(field->name), field->line);
+                    emit(OpCode::Pop, 0, field->line);
+                }
+                break;
+            }
+        }
+
         compileStatement(fn->body.get());
         chunk_.functions[i].ownedLocalNames = activeOwnedLocalNames_;
 

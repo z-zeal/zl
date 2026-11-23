@@ -172,10 +172,14 @@ Two decisions worth stating:
 
 * **Unknown fails closed toward `Reference`.** A type the mapping does not
   recognise is classified as a managed reference, never as an integer.
-* **`Reference` is currently rejected, not lowered.** There is no GC map yet, so
-  a reference in a register would be invisible to the collector at a safepoint —
-  the one class of bug that cannot be diagnosed after the fact. The class exists
-  in the model so that the day it is supported, nothing above has to change.
+* **`Reference` is carried, never used.** A reference may be a parameter, a local,
+  a block parameter, a return value, a call argument or a call result — moved,
+  stored, loaded, handed back. Every operation that would *use* one (equality,
+  concatenation, field access, a method call) is refused, because it belongs to
+  the runtime. That is safe while the tier cannot allocate and cannot call the
+  runtime, so no collection can run while a native frame is live; the frame GC
+  map that makes the rest possible is planned in
+  [native-gc-map.md](native-gc-map.md).
 
 ## Calling convention
 
@@ -242,7 +246,11 @@ Deliberately small, and complete for what it claims:
 * `int → double` widening;
 * `Load` / `Store` of primitive locals;
 * `Jump`, `Branch`, `Return`, `Unreachable`;
-* direct `Call` to another function that is itself in the subset.
+* direct `Call` to another function that is itself in the subset;
+* references carried through all of the above — a reference parameter, local or
+  return value is moved like an integer of pointer width, and `FrameSlotInfo::
+  isReference` marks the slot for the frame's GC map. Using one is still a
+  refusal (below).
 
 Correctness details that are tested rather than assumed:
 
@@ -303,8 +311,9 @@ Refusal also propagates: a function the subset accepted, which calls one it
 refused, is itself dropped — there would be no native body to jump to. This is
 iterated to a fixed point, so the surviving native set is closed under calls.
 
-Currently refused, each with its own message: references and strings, objects
-and field access, collections, closures and lambdas, generic templates,
+Currently refused, each with its own message: any *use* of a reference —
+equality, concatenation, field access, a method call — and with it strings as
+constants, objects, collections, closures and lambdas, generic templates,
 constructors, `switch`, `throw` and exception handlers, async and tasks, static
 fields, non-GC ownership contracts, arguments beyond the register set, and
 branches into blocks with parameters (which need a split critical edge).
@@ -357,8 +366,12 @@ belong to the VM's world, and a GC-map-free native frame cannot enter it),
 and non-x86-64-Linux hosts (the same guard as the executable tests - other
 platforms get `unsupported platform`, not a guess). Those refusals are the
 subset boundary made operational: every one of them names the machinery the
-"deliberately missing" list below already keeps out. Refs and objects - with
-the GC map they imply - remain P1-6's other half.
+"deliberately missing" list below already keeps out. The driver still refuses a
+signature that carries a reference, and for a different reason than selection
+used to: `--run-native` can pass `--int64` and `--double`, and a managed
+reference cannot be invented from a command line. The backend itself can carry
+one (the tests call entries with raw pointers); growing that is P1-6's remaining
+half, planned in [native-gc-map.md](native-gc-map.md).
 
 ## Tests
 
@@ -381,14 +394,18 @@ than asserting on.
 It covers the calling-convention invariants, the value-class mapping (including
 that unknown fails closed), integer and float arithmetic, all comparisons
 including the NaN cases, two-way branches, a counted loop through mutable slots,
-a cross-function direct call, division edge cases, refusal of unsupported
-functions and of their callers, refusal of MIR that does not verify, and two
-end-to-end cases that lower real ZL source through the real front end.
+a cross-function direct call, division edge cases, reference carry (a
+parameter, a frame slot and a call argument each round-trip a pointer, while a
+reference *use* is refused), refusal of unsupported functions and of their
+callers, refusal of MIR that does not verify, and two end-to-end cases that
+lower real ZL source through the real front end.
 
 ## What is deliberately missing
 
 Named so that no one has to discover them by reading the code: register
-allocation, stack argument passing, a GC map and safepoints, unwind tables
+allocation, stack argument passing, a GC map and safepoints (planned in
+[native-gc-map.md](native-gc-map.md); carrying a reference landed first, so the
+map is advisory until the tier can allocate), unwind tables
 (hence an arithmetic fault in natively executed code is a SIGILL trap, not a
 catchable `ArithmeticError` — the VM remains the tier where those are
 catchable), object layout and field access, string and collection operations,

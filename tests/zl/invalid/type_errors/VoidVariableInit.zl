@@ -1,0 +1,25 @@
+// Regression fixture - invalid/type_errors - VoidVariableInit
+//
+// A void expression produces no value, so there is nothing to bind. It used to
+// be accepted in a variable's initializer, which made the variable's type void:
+// the program compiled, and every later read of it died in lowering as
+// "unsupported reference to unbound local 'x'" - a diagnostic about the USE,
+// pointing away from the declaration that caused it, with the function stubbed
+// so the failure surfaced far from either.
+//
+// The same expression in statement position (`obj.m()`) is still fine, and the
+// value positions that already refuse void - assignment, call arguments -
+// refuse it with the same kind of message.
+
+class VoidVariableInit {
+    public func nothing(): void { }
+
+    public func probe(): void {
+        var x = this.nothing()
+        log(x)
+    }
+
+    func main(): void {
+        new VoidVariableInit().probe()
+    }
+}

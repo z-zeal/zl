@@ -89,7 +89,10 @@ enum class OpCode : std::uint8_t {
     PushHandler,
     PushFinallyHandler, // catch-all handler used to run a finally block and rethrow
     PopHandler,
-    Throw,   // pop a value, stringify it, and raise it as a real C++ exception
+    Throw,   // pop a value and raise it as a real C++ exception. An object must be
+             // Exception-derived (the type checker enforces this for source-level
+             // `throw`); a bare string is raised as a RuntimeError carrying that
+             // text, which is how a backend's fail-closed stub reports itself.
 
     // Object-oriented operations.
     NewObject,   // operand = index into Chunk::names (the class name); pushes a fresh ObjectRef

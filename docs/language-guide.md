@@ -91,6 +91,9 @@ up.
 only `==` and `!=` do. (Comparison fails at runtime inside `sort` comparators, not at
 compile time — compare with an explicit key or `String.compare` instead.)
 
+**`&&` and `||` require `bool` operands.** They are not truthiness tests: `1 && 2`
+is a compile error, not `true`. Compare first (`n != 0 && ...`).
+
 **Integer arithmetic is checked, except bit operations.** `+`, `-`, `*`, `/`, `%`,
 and unary `-` on `int` raise a runtime error on overflow, and `/`/`%` also reject a
 zero divisor (including `INT64_MIN / -1`). Division by zero is an error even for
@@ -111,6 +114,18 @@ backing storage. Access modifiers are enforced against the declaring owner: prot
 inherited access works from subclasses, private inherited access is rejected, and
 interface-qualified static-field access is rejected because interfaces own no static
 storage.
+
+**Instance field initializers run before the constructor body, always.** A field may
+carry its own initial value — `public int retries = 3` — and that value is in place
+before the constructor's first statement executes, including when the class declares a
+constructor of its own. The order across `extends` is base first: the base constructor
+(and with it the base's own field initializers) completes, then this class's fields
+initialize in declaration order, then this class's constructor body. An initializer may
+read `this` and call instance methods, but not the constructor's parameters — they are
+not in scope yet. A field declared without an initializer is left alone and keeps the
+type's zero value the allocator installs (`0`, `0.0`, `false`, `""`, the first `enum`
+member, nil for reference types). The initializer is checked against the field's
+declared type, so `public int x = "oops"` is a compile error.
 
 ## String methods
 

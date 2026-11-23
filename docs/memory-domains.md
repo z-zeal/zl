@@ -525,9 +525,10 @@ arena's eager release, not the pool, is the part with a number to chase.
 - No second collector over the same graph. Domain boxes are traced boxes with a
   shorter life; that is the only interoperation model here.
 - No native/AOT codegen for domains in v1. `TASKS.md` P1-6 records that the
-  native backend has no GC maps, no safepoints, and no refs/objects in its
-  subset; retain/release or region cleanup in native codegen needs precisely
-  those. `EnterRegion`/`ExitRegion`/`Promote` therefore **fail closed** in
+  native backend has no GC maps and no safepoints, and no objects or
+  reference-*using* code in its subset (references are carried opaquely - see
+  [native-gc-map.md](native-gc-map.md)); retain/release or region cleanup in
+  native codegen needs precisely those. `EnterRegion`/`ExitRegion`/`Promote` therefore **fail closed** in
   `--backend native`, the same convention `FfiCall` uses on the VM path.
 - No platform allocator domains (Windows `HeapAlloc`/`VirtualAlloc`, Android
   native heap, mmap regions). Those live behind the FFI boundary's registry

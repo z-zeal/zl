@@ -53,11 +53,20 @@ parameter and the legacy IR folder's six-decimal double round-trip (both closed
 closed 2026-09-18 while writing the `Condition` fixture below) - are in
 [Done](#done) and [docs/changelog.md](docs/changelog.md).
 
+A full-surface audit against *readable, reliable, easy to code* (2026-11-22)
+found three more, all closed the same day and all in this category: instance
+field initializers that no path ran, `var x = voidCall()` binding a variable of
+type void, and a stubbed function whose own refusal text the VM masked. The
+audit's remaining observations - `this` in `main`, `for` being range-only,
+scientific literals the printer emits but the lexer refuses, and the ergonomic
+syntax the guide does not promise - are not tracked here yet; the three fixes
+are in [docs/changelog.md](docs/changelog.md).
+
 ---
 
 ## P1 - promised capability, or a daily gap
 
-### P1-6 · Native backend: the driver runs integers and doubles; refs and objects stop at the GC map
+### P1-6 · Native backend: integers and doubles run; references are carried, objects stop at the GC map
 
 **Driver (2026-09-20):** `zl --run-native <file.zl> [--call NAME] [--int64 v |
 --double v]... [--iters n]` maps the emitted module executable, binds
@@ -71,25 +80,41 @@ round-trip formatter - and prints the wall pairs (~6 ms machine code vs
 ~870 ms interpreter for `sumSquares`, 0.16 vs 24 ms for `poly`, per 10,000
 calls on the sandbox). See [docs/native-backend.md](docs/native-backend.md).
 
+**References carried (2026-11-22):** a managed reference is now *carried*, not
+used - a parameter, local, block parameter, return value, call argument or call
+result moves it through native code, and `FrameSlotInfo::isReference` marks the
+slot for the frame's GC map. Every *use* (equality, concatenation, field access,
+a method call) is still refused, and the driver still refuses a signature that
+carries one because `--run-native` cannot invent a reference from the command
+line. Safe because the tier cannot allocate and cannot call the runtime, so no
+collection can run while a native frame is live. Gate:
+`testReferencePassThrough` in `tests/native_backend_tests.cpp` (three carry
+shapes execute and round-trip a pointer; a use is refused with a reason).
+Planned next: [docs/native-gc-map.md](docs/native-gc-map.md).
+
 **Remaining:**
 - The subset is still ~1.7% of the functions in a realistic module
-  ([research/report.md](research/report.md) §2.7) - ints and floats, no refs,
-  objects, collections, closures, exceptions or async; the driver calls
-  all-integer and all-double signatures and refuses the mix by name.
+  ([research/report.md](research/report.md) §2.7) - ints, floats and carried
+  refs, but no object layout, field access, collections, closures, exceptions
+  or async; the driver calls all-integer and all-double signatures and refuses
+  the mix by name.
 - In-program mixed mode is unimplemented: `--backend native` compiles the subset
   and still runs the program on the VM.
 - Win64 is select-only (`TargetMachine::encoderAvailable()` false,
   `src/native/pipeline.cpp:59`); there is no arm64 encoder, so macOS CI
   cross-compiles to SysV.
-- No register allocator, no stack arguments, no GC maps or safepoints, no unwind
-  tables, no object-file or JIT writer.
+- No register allocator, no stack arguments, no unwind tables, no object-file
+  or JIT writer; the frame GC map and safepoints are planned in
+  [docs/native-gc-map.md](docs/native-gc-map.md) and are advisory until the tier
+  can allocate.
 - An arithmetic fault in driver-executed native bytes is `SIGILL`, not a
   catchable `ArithmeticError`.
 
 **Done when** one value class at a time joins the driver and the backend - refs
-and objects are the useful next step, and the GC map is their gate - until a
-named program (start again from `NativeExecBench.zl`, plus collections) runs
-end-to-end through `--backend native` with a measured wall time against the VM.
+are carried, and objects with the GC map that carries them are the useful next
+step ([docs/native-gc-map.md](docs/native-gc-map.md)) - until a named program
+(start again from `NativeExecBench.zl`, plus collections) runs end-to-end
+through `--backend native` with a measured wall time against the VM.
 
 ---
 
