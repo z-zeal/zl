@@ -1,0 +1,56 @@
+// ============================================================================
+// Regression fixture - valid/language_hardening_tests - NullLiteralSpelling
+//
+// `nil` is the runtime's name for the null *type*, but it is not a literal the
+// language accepts - `string s = nil` does not compile. Printing a null value as
+// `nil` therefore showed users text they could not write back, and made the same
+// construct print differently on the two backends. The source spelling is
+// `null`, so that is what a printed null reads.
+// ============================================================================
+
+class NullLiteralSpelling {
+    func check(bool cond, string what): void {
+        if (!cond) {
+            throw new Exception("NullLiteralSpelling failed: " + what)
+        }
+    }
+
+    static func describe(int|string value): string {
+        return match value {
+            int n => "number " + n
+            string text => "got " + text
+            null => "empty"
+        }
+    }
+
+    func main(): void {
+        var self = new NullLiteralSpelling()
+
+        string s = null
+        log(s)
+        log(null)
+
+        // A returned null prints the same way a written one does.
+        log(NullLiteralSpelling.describe(null))
+        log(NullLiteralSpelling.describe("hi"))
+        log(NullLiteralSpelling.describe(7))
+
+        // The literal still behaves as null everywhere else.
+        int|string maybe = null
+        self.check(maybe == null, "null comparison")
+        log(match maybe {
+            string v => "value"
+            int n => "number"
+            null => "none"
+        })
+
+        // A nullable list holds nulls, and each compares equal to the literal.
+        var rows = new List<string>()
+        rows.push(null)
+        rows.push("x")
+        log(rows.length())
+        log(rows.get(0) == null)
+
+        log("ok")
+    }
+}

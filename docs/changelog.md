@@ -1,5 +1,20 @@
 # Development Checkpoints
 
+## 2026-11-24 - a null value prints as `null`, not `nil`
+
+Found while wiring up the ternary: `log(null)` printed `nil`. `nil` is the name
+the *runtime* uses for the null type (`typeKind`, `typeName`, MIR's own printer),
+but it is not a literal the language accepts - `string s = nil` does not compile.
+So printing a null showed users text they could not write back, and a function
+returning null produced output that looked like a different thing than writing
+`null` in the source.
+
+The value printer now uses the source spelling. Runtime type names are unchanged:
+`typeKind(null)` still reports `nil`, because that is an API answer, not source.
+
+Gates: `tests/zl/valid/language_hardening_tests/NullLiteralSpelling.zl` added;
+examples 52/52, regressions 109/109, ctest 44/44, native gate PASS.
+
 ## 2026-11-24 - the conditional expression: `cond ? then : else`
 
 `?` was not a token at all, so a ternary was a syntax error

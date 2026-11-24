@@ -71,7 +71,11 @@ std::string formatValueInner(const Value& v, bool quoteStrings,
     return std::visit([quoteStrings, &active, depth](const auto& held) -> std::string {
         using T = std::decay_t<decltype(held)>;
         if constexpr (std::is_same_v<T, std::monostate>) {
-            return "nil";
+            // `nil` is what the *runtime* type name uses (typeKind/typeName), but
+            // it is not a literal the language accepts - `string s = nil` does not
+            // compile. Printing a null value as `nil` therefore showed users text
+            // they cannot write back; the source spelling is `null`.
+            return "null";
         } else if constexpr (std::is_same_v<T, bool>) {
             return held ? "true" : "false";
         } else if constexpr (std::is_same_v<T, std::int64_t>) {
