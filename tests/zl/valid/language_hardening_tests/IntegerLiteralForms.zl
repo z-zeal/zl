@@ -1,0 +1,47 @@
+// ============================================================================
+// Regression fixture - valid/language_hardening_tests - IntegerLiteralForms
+//
+// Hexadecimal, binary and `_`-separated decimal integers, plus unary `+` and a
+// trailing-dot float. All of these used to be syntax errors: `0x1F` lexed as
+// `0` followed by the identifier `x1F`, `1_000` as `1` then `_000`, and `+5` was
+// not a unary operator at all.
+//
+// The hex and binary spellings are resolved to their decimal value by the
+// lexer, so `-0x8000000000000000` reaches the existing INT64_MIN fold just as
+// `-9223372036854775808` does.
+// ============================================================================
+
+class IntegerLiteralForms {
+    func check(bool cond, string what): void {
+        if (!cond) {
+            throw new Exception("IntegerLiteralForms failed: " + what)
+        }
+    }
+
+    func main(): void {
+        var self = new IntegerLiteralForms()
+
+        self.check(0x1F == 31, "hex lowercase prefix")
+        self.check(0Xff == 255, "hex uppercase digits")
+        self.check(0b101 == 5, "binary")
+        self.check(0B11 == 3, "binary uppercase prefix")
+        self.check(1_000 == 1000, "decimal separator")
+        self.check(0xFF_FF == 65535, "hex separator")
+        self.check(0b1010_1010 == 170, "binary separator")
+        self.check(1_0.5 == 10.5, "separator in a float")
+
+        // Unary plus is the identity; the checker still restricts it to numbers.
+        self.check(+5 == 5, "unary plus int")
+        self.check(+5.5 == 5.5, "unary plus double")
+        self.check(+0x2A == 42, "unary plus hex")
+
+        // A trailing dot is a float, not a member access.
+        self.check(5. == 5.0, "trailing dot")
+
+        // The extremes, through the hex/binary spellings.
+        self.check(-0x8000000000000000 == -9223372036854775808, "INT64_MIN in hex")
+        self.check(0x7FFFFFFFFFFFFFFF == 9223372036854775807, "INT64_MAX in hex")
+
+        log("ok")
+    }
+}

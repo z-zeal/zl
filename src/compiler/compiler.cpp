@@ -815,6 +815,8 @@ void Compiler::compileUnary(const UnaryExpr* node) {
     }
     compileExpression(node->operand.get());
     switch (node->op) {
+        // Unary plus is the identity: the operand's own value is the result.
+        case TokenType::PLUS:    break;
         case TokenType::MINUS:   emit(OpCode::Neg, 0, node->line); break;
         case TokenType::NOT:     emit(OpCode::Not, 0, node->line); break;
         case TokenType::BIT_NOT: emit(OpCode::BitNot, 0, node->line); break;

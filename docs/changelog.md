@@ -1,5 +1,48 @@
 # Development Checkpoints
 
+## 2026-11-24 - hex, binary, `_` separators, unary `+`, and a trailing dot
+
+More of the audit's leftover list: spellings users expect that the lexer
+refused outright.
+
+**Hexadecimal and binary integers.** `0x1F` lexed as the integer `0` followed by
+the identifier `x1F`, and `0b101` the same way, so both were syntax errors. The
+lexer now resolves these prefixes - and strips `_` digit separators - into the
+equivalent plain **decimal digits**. That representation is deliberate:
+`Literal::raw` is parsed as base 10 at a dozen sites (`std::stoll`/`std::stod`
+in the compiler, pattern keys, array sizes, the IR optimizer's constant fold,
+and the native emitter), so rewriting it once at the source keeps all of them
+correct rather than teaching each one about prefixes. A value wider than uint64
+saturates to a decimal far outside int64, so the existing range check rejects it
+with its normal message instead of overflowing silently.
+
+`-0x8000000000000000` works too: it resolves to the decimal magnitude that the
+INT64_MIN fold already recognises, so the most-negative int64 is writable in hex
+and binary exactly as it is in decimal.
+
+**`_` separators**, in decimal, hex and binary (`1_000`, `0xFF_FF`,
+`0b1010_1010`), including inside a float (`1_0.5`). A separator must be followed
+by a digit, so a stray `1_` ends the literal rather than vanishing.
+
+**Unary `+`.** The parser did not treat `+` as a prefix operator, so `+5` was a
+syntax error even though `OperatorRules::unaryResult` already accepted it and
+the MIR lowering already implemented it as the identity. It is now accepted, and
+both backends emit nothing for it; the reference emitter needed the matching
+identity case or it would have thrown on an operator it had just been handed.
+The checker still restricts it to `int` and `double`, so `+"abc"` remains an
+error - now the right one (`unary '+' requires a numeric operand`) instead of a
+syntax error.
+
+**A trailing dot** (`5.` is five) was refused because `.` only continued a number
+when a digit followed. It is now taken unless the next character could continue
+a name, and never when it is another `.`, which is what keeps the exclusive
+range `0..n` working. That last guard matters: without it every range in the
+language would have lexed as a float followed by a member access.
+
+Gates: `tests/zl/valid/language_hardening_tests/IntegerLiteralForms.zl`,
+`tests/zl/invalid/type_errors/UnaryPlusNonNumeric.zl`, and
+`examples/basics/DataTypes.zl` extended with the new spellings.
+
 ## 2026-11-24 - exponent literals, and a refusal that names the rule for `this` in `main`
 
 Two entries from the November audit's leftover list, both cases where a program

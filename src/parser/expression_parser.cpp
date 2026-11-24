@@ -51,7 +51,11 @@ std::optional<InfixBinding> infixBinding(TokenType type) {
 }
 
 bool isUnary(TokenType type) {
-    return type == TokenType::MINUS || type == TokenType::NOT || type == TokenType::BIT_NOT;
+    // Unary `+` is the identity. It is accepted here so `+5` parses; the type
+    // checker (`OperatorRules::unaryResult`) still restricts it to int and
+    // double, and both backends lower it to nothing at all.
+    return type == TokenType::PLUS || type == TokenType::MINUS ||
+           type == TokenType::NOT || type == TokenType::BIT_NOT;
 }
 
 NodePtr makeBinary(TokenType op, NodePtr left, NodePtr right, std::size_t line) {
