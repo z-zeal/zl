@@ -1,0 +1,25 @@
+// ============================================================================
+// Regression fixture - invalid/type_errors - ThisInMain
+//
+// `main` is deliberately invoked with no receiver: the entry stub calls it as a
+// plain function (documented in examples/advanced/AsyncTasks.zl, "main has no
+// receiver"). Using `this` there therefore cannot work.
+//
+// It used to compile cleanly and fail at run time with
+//     runtime error: undefined variable 'this'
+// long after the program had been accepted - a diagnostic about a missing
+// binding rather than about the rule. The refusal now lands on the use itself,
+// naming the rule and the workaround.
+// ============================================================================
+
+class ThisInMain {
+    public int n
+
+    func ThisInMain(): void {
+        this.n = 7
+    }
+
+    func main(): void {
+        log(this.n)
+    }
+}

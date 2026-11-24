@@ -1,0 +1,21 @@
+// ============================================================================
+// Regression fixture - invalid/type_errors - ThisInMainLambda
+//
+// Companion to ThisInMain.zl: the rule reaches a lambda nested inside main,
+// not just a direct use. A lambda there used to compile and fail at run time
+// with `undefined variable 'this'` reported against `$lambda0`, which named
+// neither the rule nor the fix.
+// ============================================================================
+
+class ThisInMainLambda {
+    public int n
+
+    func ThisInMainLambda(): void {
+        this.n = 7
+    }
+
+    func main(): void {
+        var f = func() { log(this.n) }
+        f()
+    }
+}

@@ -23,6 +23,9 @@ private:
     [[nodiscard]] bool isAtEnd() const;
     char peek() const;        // look at current char without consuming it
     char peekNext() const;    // look one char ahead
+    // True when the exponent following the current `e`/`E` has at least one
+    // digit, allowing for an optional sign. Lookahead only - consumes nothing.
+    [[nodiscard]] bool hasExponentDigits() const;
     char advance();           // consume and return the current char
     bool match(char expected); // consume current char IF it equals `expected`
 

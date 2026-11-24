@@ -84,6 +84,14 @@ char Lexer::peekNext() const {
     return source_[pos_ + 1];
 }
 
+bool Lexer::hasExponentDigits() const {
+    // Called with the current character being the `e`/`E` itself, so the
+    // exponent's digits start one position on - past an optional sign.
+    std::size_t i = pos_ + 1;
+    if (i < source_.size() && (source_[i] == '+' || source_[i] == '-')) ++i;
+    return i < source_.size() && std::isdigit(static_cast<unsigned char>(source_[i]));
+}
+
 char Lexer::advance() {
     char c = source_[pos_++];
     if (c == '\n') {
@@ -133,6 +141,13 @@ Token Lexer::scanNumber() {
         while (!isAtEnd() && std::isdigit(static_cast<unsigned char>(peek()))) {
             text += advance();
         }
+        if ((peek() == 'e' || peek() == 'E') && hasExponentDigits()) {
+            text += advance();
+            if (peek() == '+' || peek() == '-') text += advance();
+            while (!isAtEnd() && std::isdigit(static_cast<unsigned char>(peek()))) {
+                text += advance();
+            }
+        }
         return Token{type, text, startLine, startCol};
     }
 
@@ -142,6 +157,20 @@ Token Lexer::scanNumber() {
     if (peek() == '.' && std::isdigit(static_cast<unsigned char>(peekNext()))) {
         type = TokenType::FLOAT_LITERAL;
         text += advance(); // consume '.'
+        while (!isAtEnd() && std::isdigit(static_cast<unsigned char>(peek()))) {
+            text += advance();
+        }
+    }
+    // Exponent part, as in `1e5`, `1E+21` or `1.5e-3`. The printer emits this
+    // form (`log(1e21)` prints `1e+21`), so refusing to lex it would make the
+    // language unable to read back its own output.
+    //
+    // Only taken when at least one digit follows, so `1e` stays an integer
+    // literal followed by the identifier `e` and keeps its existing error.
+    if ((peek() == 'e' || peek() == 'E') && hasExponentDigits()) {
+        type = TokenType::FLOAT_LITERAL;
+        text += advance(); // consume 'e'/'E'
+        if (peek() == '+' || peek() == '-') text += advance();
         while (!isAtEnd() && std::isdigit(static_cast<unsigned char>(peek()))) {
             text += advance();
         }

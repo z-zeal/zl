@@ -644,6 +644,11 @@ private:
     // super(...) calls: only legal inside a constructor, and only as its
     // literal first statement).
     bool inConstructor_{false};
+    // True while checking any func lexically nested inside `main`, lambdas
+    // included. Unlike currentFunctionName_, this is deliberately not saved and
+    // restored by the lambda path - `main` has no receiver, so a `this` in a
+    // lambda inside it has no receiver either.
+    bool lexicallyInsideMain_{false};
     bool currentFunctionIsStatic_{false};
     bool currentFunctionIsAsync_{false};
     // >0 while type-checking a callback executed under a Mutex/RwLock.

@@ -2507,6 +2507,9 @@ void TypeChecker::checkFunctionDecl(const FunctionDecl* node) {
     currentClassName_ = node->ownerClassName; // "" for a free func; used by checkAccess
     inConstructor_ = node->isConstructor;
 
+    const bool previousLexicallyInsideMain = lexicallyInsideMain_;
+    lexicallyInsideMain_ = (node->name == "main");
+
     bool previousFunctionSuppresses = functionSuppressesDeprecation_;
     if (const Annotation* sw = findAnnotation(node->annotations, "SuppressWarnings")) {
         functionSuppressesDeprecation_ = sw->argument.value_or("") == "deprecation";
@@ -2597,6 +2600,7 @@ void TypeChecker::checkFunctionDecl(const FunctionDecl* node) {
     currentClassTypeParams_ = std::move(previousTypeParams);
     currentClassName_.clear();
     inConstructor_ = false;
+    lexicallyInsideMain_ = previousLexicallyInsideMain;
     functionSuppressesDeprecation_ = previousFunctionSuppresses;
     currentFunctionIsStatic_ = previousFunctionIsStatic;
     currentFunctionIsAsync_ = previousFunctionIsAsync;
@@ -6133,6 +6137,16 @@ TypeChecker::InferredType TypeChecker::inferMethodCall(const MethodCallExpr* nod
 }
 
 TypeChecker::InferredType TypeChecker::inferThisExpr(const ThisExpr* node) {
+    // `main` is deliberately invoked with no receiver - the entry stub calls it
+    // as a plain function (see examples/advanced/AsyncTasks.zl, "main has no
+    // receiver"), and that applies to a lambda nested in it too. Say so here, at
+    // the use, instead of letting the program reach the VM's
+    // "undefined variable 'this'" long after compiling cleanly.
+    if (lexicallyInsideMain_) {
+        typeError("'this' is not available inside main() - main has no receiver; "
+                  "create an instance and call through it",
+                  node->line);
+    }
     if (currentFunctionIsStatic_) {
         typeError("'this' cannot be used inside a static func", node->line);
     }

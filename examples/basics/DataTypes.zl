@@ -30,6 +30,14 @@ class DataTypes {
         log(7 % 2)          // remainder
         log(7.0 / 2.0)      // real division
         log(3.14)           // shortest round-trip double formatting
+
+        // Exponent notation reads back what the printer writes: a large or
+        // small double is printed in this form, so it has to be writable too.
+        log(1e5)
+        log(1E5)
+        log(1.5e3)
+        log(.5e2)
+        log(1e-07)
     }
 }
 
@@ -42,4 +50,9 @@ class DataTypes {
 // 1
 // 3.5
 // 3.14
+// 100000
+// 100000
+// 1500
+// 50
+// 1e-07
 // --- End expected output ---
