@@ -1,5 +1,34 @@
 # Development Checkpoints
 
+## 2026-11-24 - exponent literals, and a refusal that names the rule for `this` in `main`
+
+Two entries from the November audit's leftover list, both cases where a program
+compiled cleanly and the failure arrived somewhere unrelated.
+
+**The lexer could not read the printer's output.** A large or small double is
+printed in exponent form - `log(1e21)` prints `1e+21`, `log(0.0000001)` prints
+`1e-07` - but `scanNumber` stopped after the mantissa, so `1e5` lexed as the
+integer `1` followed by the identifier `e5` and every spelling died with
+`Expected ')' after log argument -- got "e5"`. The language could write a
+literal it refused to read. `scanNumber` now takes an optional exponent
+(`1e5`, `1E5`, `1e+21`, `1e-07`, `1.5e3`, `.5e2`), guarded by a lookahead that
+requires a digit after an optional sign so `1e` keeps its existing meaning of
+an integer followed by an identifier. `std::stod` already parsed these forms, so
+no value-conversion change was needed and the AST and MIR paths agree.
+
+**`this` inside `main()` failed at run time.** `main` is deliberately invoked
+with no receiver - the entry stub calls it as a plain function, and
+`examples/advanced/AsyncTasks.zl` documents the consequence ("`main` has no
+receiver"). Using `this` there compiled without a word and then died with
+`runtime error: undefined variable 'this'`, a message about a missing binding
+rather than about the rule that forbids it. `inferThisExpr` now refuses it at
+the use, naming the rule and the workaround; `examples/advanced/AsyncTasks.zl`
+already shows the intended shape (create an instance, call through it).
+
+Gates: `tests/zl/invalid/type_errors/ThisInMain.zl`,
+`tests/zl/valid/language_hardening_tests/ExponentLiterals.zl`, and
+`examples/basics/DataTypes.zl` extended with the round-trip spellings.
+
 ## 2026-11-22 - two more void holes: `log(voidCall())` and `&&`/`||` operands
 
 The same audit's "void used as a value" family had two members the first pass

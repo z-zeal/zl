@@ -1,0 +1,36 @@
+// ============================================================================
+// Regression fixture - valid/language_hardening_tests - ExponentLiterals
+//
+// The printer emits exponent form (`log(1e21)` prints `1e+21`), so the lexer
+// must be able to read back what the language writes. It could not: `1e5` was
+// an integer literal followed by the identifier `e5`, and every spelling failed
+// with `Expected ')' after log argument -- got "e5"`.
+//
+// Covers the shapes the printer produces (`1e+21`, `1e-07`) plus the ordinary
+// spellings (`1E5`, `1.5e3`, `.5e2`). `1e` with no digits is still refused:
+// the exponent is only consumed when a digit follows.
+// ============================================================================
+
+class ExponentLiterals {
+    func check(bool cond, string what): void {
+        if (!cond) {
+            throw new Exception("ExponentLiterals failed: " + what)
+        }
+    }
+
+    func main(): void {
+        var self = new ExponentLiterals()
+
+        // Exact round-trip of the printer's own output for a large double.
+        self.check(1e5 == 100000.0, "1e5")
+        self.check(1E5 == 100000.0, "1E5")
+        self.check(1e+21 == 1000000000000000000000.0, "1e+21")
+        self.check(1e-07 == 0.0000001, "1e-07")
+        self.check(1.5e3 == 1500.0, "1.5e3")
+        self.check(.5e2 == 50.0, ".5e2")
+
+        // An exponent with no digits is not a float: it stays an integer
+        // followed by an identifier, which is a syntax error - not a value.
+        log("ok")
+    }
+}
