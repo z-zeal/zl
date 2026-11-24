@@ -1,0 +1,12 @@
+// ============================================================================
+// Regression fixture - invalid/type_errors - TernaryBranchMismatch
+//
+// Both branches of a ternary must produce the same type, which is the rule the
+// desugared `match` already enforces. The message names the `?` expression.
+// ============================================================================
+
+class TernaryBranchMismatch {
+    func main(): void {
+        log(true ? 1 : "x")
+    }
+}

@@ -398,6 +398,7 @@ std::vector<Token> Lexer::tokenize() {
             case ']': tokens.push_back(makeToken(TokenType::RBRACKET, "]", startLine, startCol)); break;
             case ';': tokens.push_back(makeToken(TokenType::SEMICOLON, ";", startLine, startCol)); break;
             case ':': tokens.push_back(makeToken(TokenType::COLON, ":", startLine, startCol)); break;
+            case '?': tokens.push_back(makeToken(TokenType::QUESTION, "?", startLine, startCol)); break;
             case '@': tokens.push_back(makeToken(TokenType::AT, "@", startLine, startCol)); break;
             case '#':
                 // '#' is the regex literal delimiter. scanRegexLiteral() expects

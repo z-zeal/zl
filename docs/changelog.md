@@ -1,5 +1,34 @@
 # Development Checkpoints
 
+## 2026-11-24 - the conditional expression: `cond ? then : else`
+
+`?` was not a token at all, so a ternary was a syntax error
+(`Expected ')' after log argument -- got "?"`). It is now an expression that
+yields a value, evaluates its condition once, runs exactly one branch, and
+chains to the right:
+
+```zl
+log(n == 1 ? "one" : n == 2 ? "two" : "many")
+```
+
+**It desugars into `match`.** `c ? a : b` becomes `match c { true => a false => b }`,
+so there is no new node and nothing new for either backend to lower: bool
+coverage, "both arms must produce the same type", and single evaluation all come
+from the match that already existed. Precedence follows from where it is parsed -
+tighter than assignment (`int x = c ? 1 : 2` assigns the whole ternary) and looser
+than arithmetic and comparison.
+
+Because the source says `?` and not `match`, the two diagnostics name the
+construct the user wrote: a non-bool condition reports `'?' requires a bool
+condition` rather than the match wording about literal patterns, and differing
+branches report `both branches of a '?' expression must produce the same type`.
+`MatchExpr::isTernarySugar` carries that distinction to the checker.
+
+Gates: `tests/zl/valid/language_hardening_tests/TernaryExpression.zl`,
+`tests/zl/invalid/type_errors/TernaryNonBoolCondition.zl`,
+`tests/zl/invalid/type_errors/TernaryBranchMismatch.zl`, and
+`examples/basics/Conditions.zl` extended.
+
 ## 2026-11-24 - hex, binary, `_` separators, unary `+`, and a trailing dot
 
 More of the audit's leftover list: spellings users expect that the lexer

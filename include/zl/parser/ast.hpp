@@ -316,6 +316,10 @@ struct MatchExpr : AstNode {
     };
     NodePtr subject;
     std::vector<Arm> arms;
+    // True when this node is the desugaring of `cond ? then : else` rather than
+    // source that says `match`. Only diagnostics consult it: a ternary should
+    // not be told about "match literal patterns".
+    bool isTernarySugar{false};
     MatchExpr() : AstNode(NodeKind::MatchExpr) {}
 };
 

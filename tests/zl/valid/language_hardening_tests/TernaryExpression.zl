@@ -1,0 +1,47 @@
+// ============================================================================
+// Regression fixture - valid/language_hardening_tests - TernaryExpression
+//
+// `cond ? then : else` used to be a syntax error (`?` was not a token at all).
+// It is now an expression: the condition is evaluated once, exactly one branch
+// runs, and both branches must agree on a type - the same rule `match` applies,
+// because that is what a ternary desugars to.
+//
+// Covers value and void results, right associativity, and the precedence claims:
+// looser than arithmetic and comparison, tighter than assignment.
+// ============================================================================
+
+class TernaryExpression {
+    func check(bool cond, string what): void {
+        if (!cond) {
+            throw new Exception("TernaryExpression failed: " + what)
+        }
+    }
+
+    func main(): void {
+        var self = new TernaryExpression()
+
+        int n = 3
+        self.check((n > 2 ? "big" : "small") == "big", "string result")
+        self.check((true ? 1 : 2) == 1, "int result")
+
+        // Right associative: this is one ?: nested in the else branch.
+        self.check((n == 1 ? "one" : n == 2 ? "two" : "many") == "many", "chained ternary")
+        self.check((1 == 1 ? "a" : 2 == 2 ? "b" : "c") == "a", "chain takes the first branch")
+
+        // A void ternary runs exactly one side - here the branch pushes once,
+        // so the list has one element and it is the else branch's value.
+        var seen = new List<int>()
+        var which = false
+        which ? seen.push(1) : seen.push(2)
+        self.check(seen.length() == 1 && seen.get(0) == 2, "void branches")
+
+        // Binds tighter than assignment: the whole ternary is assigned.
+        int x = n + 1 > 2 ? 10 : 20
+        self.check(x == 10, "precedence over assignment")
+
+        // Binds looser than arithmetic and comparison.
+        self.check((n + 1 > 2 ? true : false), "precedence under comparison")
+
+        log("ok")
+    }
+}

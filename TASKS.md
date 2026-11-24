@@ -63,9 +63,9 @@ exponent literals the printer emits but the lexer refused, and `this` in `main`
 failing at run time instead of at the use.
 
 Still open from that list: `for` is range-only, and the ergonomic syntax the
-guide does not promise (`+=`, `++`, `switch`, ternary). The literal spellings are
-done - hex, binary, `_` separators, unary `+` and a trailing dot closed the same
-day as exponent notation.
+guide does not promise (`+=`, `++`, `switch`). The literal spellings and the
+conditional expression are done - hex, binary, `_` separators, unary `+`, a
+trailing dot and `cond ? then : else` closed the same day as exponent notation.
 
 ---
 

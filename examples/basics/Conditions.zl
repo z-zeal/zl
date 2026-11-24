@@ -3,6 +3,10 @@
 //
 // ZL spells the "else if" branch `elif`. Both `elif` and the two-word
 // `else if` are accepted.
+//
+// A condition that produces a value uses `cond ? then : else`. It is an
+// expression, so it can be passed, assigned, or chained to the right; both
+// branches must produce the same type.
 // ============================================================================
 
 class Conditions {
@@ -26,6 +30,11 @@ class Conditions {
 
         var n = 4
         if (n % 2 == 0) { log("even") } else { log("odd") }
+
+        log(n > 2 ? "big" : "small")
+        log(n == 1 ? "one" : n == 2 ? "two" : "many")
+        int label = n % 2 == 0 ? 10 : 20
+        log(label)
     }
 }
 
@@ -35,4 +44,7 @@ class Conditions {
 // C
 // F
 // even
+// big
+// many
+// 10
 // --- End expected output ---

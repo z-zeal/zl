@@ -86,6 +86,7 @@ namespace zl {
         RBRACKET,         // ]
         SEMICOLON,        // ;
         COLON,            // :
+        QUESTION,         // ?  (the `cond ? then : else` expression)
         COMMA,            // ,
         DOT,              // .
         DOT_DOT,          // ..

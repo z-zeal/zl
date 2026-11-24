@@ -3910,8 +3910,15 @@ TypeChecker::InferredType TypeChecker::inferMatchExpr(MatchExpr* node) {
                         : ((subjectType == ZlType::UNKNOWN) ||
                            isAssignable(pt.type, subjectType, pt.className, subjectClass) ||
                            isAssignable(subjectType, pt.type, subjectClass, pt.className));
-                    if (!compatible)
-                        typeError("match literal pattern type does not match subject type", pattern.line);
+                    if (!compatible) {
+                        // A desugared `cond ? a : b` has only true/false arms, so
+                        // an incompatible subject can only mean the condition is
+                        // not bool - say that rather than talking about patterns.
+                        typeError(node->isTernarySugar
+                                      ? "'?' requires a bool condition"
+                                      : "match literal pattern type does not match subject type",
+                                  pattern.line);
+                    }
                     if (pattern.literalType == TokenType::BOOL_LITERAL && !pattern.raw.empty()) {
                         if (pattern.raw == "true") matchedTrue = true; else if (pattern.raw == "false") matchedFalse = true;
                     }
@@ -4293,7 +4300,10 @@ TypeChecker::InferredType TypeChecker::inferMatchExpr(MatchExpr* node) {
         else if (armResult.type != result.type || armResult.className != result.className) {
             if (!isAssignable(armResult.type, result.type, armResult.className, result.className) ||
                 !isAssignable(result.type, armResult.type, result.className, armResult.className))
-                typeError("all match arms must produce the same type", arm.line);
+                typeError(node->isTernarySugar
+                              ? "both branches of a '?' expression must produce the same type"
+                              : "all match arms must produce the same type",
+                          arm.line);
         }
         symbols_.popScope();
         typeExits.push_back(symbols_.snapshot());
