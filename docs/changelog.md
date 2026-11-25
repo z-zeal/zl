@@ -1,5 +1,27 @@
 # Development Checkpoints
 
+## 2026-11-22 - iterate a native list with `for value in values`
+
+`for` previously accepted only a numeric range. It now also accepts a typed
+native `list<T>` and binds each element to the loop variable:
+
+```zl
+for value in values {
+    log(value)
+}
+```
+
+The collection expression runs exactly once, and the initial list length is
+captured before iteration. Element types flow into the body; `break` and
+`continue` use the same loop machinery as range loops. Other collection kinds
+(maps, sets, and the `List<T>` wrapper class) are intentionally not supported by
+this first form. The reflection guide and the native-list example now use it.
+
+Gates: `ForInList.zl` and `ForInNonList.zl` pass on both AST and MIR paths;
+examples 52/52, default regressions 117/117, ctest 44/44, and native gate PASS.
+The full AST regression sweep reports one failure in the unrelated
+`IncompleteStubRefusal` case; the other 116 cases pass.
+
 ## 2026-11-24 - a double range bound works on MIR too
 
 `for i in 0..5.0` (and a fractional `step`) is a double range: the checker

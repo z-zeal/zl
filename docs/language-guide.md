@@ -361,6 +361,19 @@ the native signature catalog rather than in library-specific compiler branches.
 
 ## Generic collections
 
+Typed native `list<T>` values can be traversed directly with `for value in list`.
+The collection expression is evaluated once, and the loop captures its initial
+length; the inferred element type is available in the body. This form currently
+supports native lists (not maps or sets); numeric ranges remain `for i in
+start..end` with an optional `step`.
+
+```zl
+list<string> names = ["Ada", "Grace"]
+for name in names {
+    log(name)
+}
+```
+
 `List<T>`, `Map<K,V>`, and `Set<T>` are real generic classes, not native tags.
 `push`/`pop`/`get`/`put`/`length` and `add`/`has`/`remove` are genuinely compiled
 methods, so a wrong element, key, or value type is a compile-time error:
@@ -772,14 +785,12 @@ including inherited ones — but not as plain strings: each element is a `Field`
 
 ```zl
 list<Field> fields = t.fields()
-for i in 0..Collection.length(fields) {
-    Field f = Collection.get(fields, i)
+for f in fields {
     log("field " + f.name() + ": " + f.type() + " (" + f.access() + ")")
 }
 
 list<Method> methods = t.methods()
-for i in 0..Collection.length(methods) {
-    Method m = Collection.get(methods, i)
+for m in methods {
     log("method " + m.name() + " -> " + m.returnType())
 }
 ```

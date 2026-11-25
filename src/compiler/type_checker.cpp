@@ -873,6 +873,7 @@ void collectFunctionLocals(const AstNode* node, std::unordered_set<std::string>&
         case NodeKind::ForStmt: {
             const auto* n = static_cast<const ForStmt*>(node);
             if (!n->varName.empty()) locals.insert(n->varName);
+            collectFunctionLocals(n->iterable.get(), locals);
             collectFunctionLocals(n->start.get(), locals);
             collectFunctionLocals(n->end.get(), locals);
             collectFunctionLocals(n->step.get(), locals);
@@ -1114,6 +1115,7 @@ bool TypeChecker::checkNamedFunctionConfinementNode(
         }
         case NodeKind::ForStmt: {
             const auto* n = static_cast<const ForStmt*>(node);
+            if (!checkNamedFunctionConfinementNode(n->iterable.get(), owner, locals, reason)) return false;
             if (!checkNamedFunctionConfinementNode(n->start.get(), owner, locals, reason)) return false;
             if (!checkNamedFunctionConfinementNode(n->end.get(), owner, locals, reason)) return false;
             if (!checkNamedFunctionConfinementNode(n->step.get(), owner, locals, reason)) return false;
@@ -3548,27 +3550,56 @@ void TypeChecker::checkReturnStmt(const ReturnStmt* node) {
 void TypeChecker::checkForStmt(const ForStmt* node) {
     for (const auto& assigned : collectLambdaCaptureRefs(node, {}).assignedNames) symbols_.invalidate(assigned);
     ++loopDepth_;
-    ZlType startType = inferExpr(node->start.get());
-    ZlType endType = inferExpr(node->end.get());
-    ZlType stepType = inferExpr(node->step.get());
 
-    if ((startType != ZlType::INT && startType != ZlType::DOUBLE) ||
-        (endType != ZlType::INT && endType != ZlType::DOUBLE) ||
-        (stepType != ZlType::INT && stepType != ZlType::DOUBLE)) {
-        typeError("for-loop range and step must be numbers", node->line);
+    if (node->iterable) {
+        const InferredType collection = inferExpr(node->iterable.get());
+        if (collection.type != ZlType::LIST) {
+            typeError("for-in currently requires a list<T> collection", node->line);
+        }
+
+        TypeAnnotation elementAnnotation;
+        if (collection.className.empty()) {
+            elementAnnotation.name = "unknown";
+        } else {
+            const TypeName collectionName = parseTypeName(collection.className);
+            if (collectionName.name != "list" || collectionName.args.size() != 1) {
+                typeError("for-in currently requires a list<T> collection", node->line);
+            }
+            elementAnnotation = typeAnnotationFromName(collectionName.args.front());
+        }
+        const SymbolTable::VarInfo elementInfo = variableInfo(elementAnnotation);
+
+        symbols_.pushScope();
+        SymbolTable::VarInfo collectionInfo;
+        collectionInfo.type = collection.type;
+        collectionInfo.className = collection.className;
+        collectionInfo.ownership = collection.ownership;
+        node->iterableStorageName = symbols_.defineVar("\x01for_iterable", std::move(collectionInfo)).storageName;
+        node->indexStorageName = symbols_.defineVar("\x01for_index", ZlType::INT, false).storageName;
+        node->storageName = symbols_.defineVar(node->varName, elementInfo).storageName;
+    } else {
+        const ZlType startType = inferExpr(node->start.get());
+        const ZlType endType = inferExpr(node->end.get());
+        const ZlType stepType = inferExpr(node->step.get());
+
+        if ((startType != ZlType::INT && startType != ZlType::DOUBLE) ||
+            (endType != ZlType::INT && endType != ZlType::DOUBLE) ||
+            (stepType != ZlType::INT && stepType != ZlType::DOUBLE)) {
+            typeError("for-loop range and step must be numbers", node->line);
+        }
+        const ZlType loopType = (startType == ZlType::DOUBLE || endType == ZlType::DOUBLE ||
+                                 stepType == ZlType::DOUBLE) ? ZlType::DOUBLE : ZlType::INT;
+        node->isDoubleRange = (loopType == ZlType::DOUBLE);
+        symbols_.pushScope();
+        node->storageName = symbols_.defineVar(node->varName, loopType, /*isConst=*/false).storageName;
     }
-    ZlType loopType = (startType == ZlType::DOUBLE || endType == ZlType::DOUBLE ||
-                       stepType == ZlType::DOUBLE) ? ZlType::DOUBLE : ZlType::INT;
-    node->isDoubleRange = (loopType == ZlType::DOUBLE);
-    symbols_.pushScope();
-    node->storageName = symbols_.defineVar(node->varName, loopType, /*isConst=*/false).storageName;
 
     const OwnershipFlowState incoming = captureOwnershipState();
     if (node->body) {
         checkStatement(node->body.get());
         const OwnershipFlowState bodyExit = captureOwnershipState();
-        // A range can execute zero times, so the body state and incoming state
-        // are both reachable after the loop.
+        // Both range and list loops can execute zero times, so either state may
+        // be observed after the loop.
         restoreOwnershipState(joinOwnershipStates({incoming, bodyExit}));
     }
     symbols_.popScope();

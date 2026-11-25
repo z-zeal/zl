@@ -346,6 +346,10 @@ struct FnLowerer {
     }
 
     void lowerFor(const ForStmt* node) {
+        if (node->iterable) {
+            unsupported(node, "list for-in loop in the legacy IR lowerer");
+            return;
+        }
         ValueId start = expr(node->start.get());
         ValueId end = expr(node->end.get());
         ValueId step = expr(node->step.get());

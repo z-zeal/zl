@@ -86,6 +86,7 @@ void collectRefs(const AstNode* node, LambdaCaptureRefs& out, const std::unorder
         case NodeKind::ReturnStmt: { auto* n = static_cast<const ReturnStmt*>(node); collectRefs(n->value.get(), out, bound); break; }
         case NodeKind::ForStmt: {
             const auto* n = static_cast<const ForStmt*>(node);
+            collectRefs(n->iterable.get(), out, bound);
             collectRefs(n->start.get(), out, bound);
             collectRefs(n->end.get(), out, bound);
             collectRefs(n->step.get(), out, bound);

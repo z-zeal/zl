@@ -1111,26 +1111,31 @@ NodePtr Parser::parseReturnStmt() {
     return node;
 }
 
-// for i in start..end step s { body }   -- 'step s' is optional (defaults to 1)
+// for i in start..end step s { body } (optional step defaults to 1), or
+// for value in list<T> { body }
 NodePtr Parser::parseForStmt() {
     Token forTok = advance(); // consume 'for'
     Token varTok = expectName("Expected a loop variable name after 'for'");
-    expect(TokenType::KW_IN, "Expected 'in' after the loop variable, e.g. for i in 0..10");
+    expect(TokenType::KW_IN, "Expected 'in' after the loop variable, e.g. for i in 0..10 or for value in values");
 
     auto node = std::make_unique<ForStmt>();
     node->line = forTok.line;
     node->varName = varTok.lexeme;
-    node->start = parseConditionExpression();
-    expect(TokenType::DOT_DOT, "Expected '..' between the start and end of a for-range");
-    node->end = parseConditionExpression();
+    NodePtr first = parseConditionExpression();
+    if (match({TokenType::DOT_DOT})) {
+        node->start = std::move(first);
+        node->end = parseConditionExpression();
 
-    if (match({TokenType::KW_STEP})) {
-        node->step = parseConditionExpression();
+        if (match({TokenType::KW_STEP})) {
+            node->step = parseConditionExpression();
+        } else {
+            auto one = std::make_unique<Literal>();
+            one->literalType = TokenType::INT_LITERAL;
+            one->raw = "1";
+            node->step = std::move(one);
+        }
     } else {
-        auto one = std::make_unique<Literal>();
-        one->literalType = TokenType::INT_LITERAL;
-        one->raw = "1";
-        node->step = std::move(one);
+        node->iterable = std::move(first);
     }
 
     node->body = parseBlock();

@@ -395,21 +395,23 @@ struct ReturnStmt : AstNode {
     ReturnStmt() : AstNode(NodeKind::ReturnStmt) {}
 };
 
-// for i in start..end step s { body }   ('step s' is optional, defaults to 1)
-// Direction is resolved at RUNTIME from step's sign, so both ascending and
-// descending ranges work: `for i in 0..10 { }` and `for i in 10..0 step -1 { }`.
+// `for i in start..end step s { body }` (optional step defaults to 1), or
+// `for value in list<T> { body }`. Range direction is resolved at RUNTIME from
+// step's sign, so ascending and descending ranges both work.
 struct ForStmt : AstNode {
     std::string varName;
     mutable std::string storageName;
     NodePtr start;
     NodePtr end;
-    NodePtr step;      // never null - parser fills in a literal 1 if 'step' was omitted
+    NodePtr step;      // never null for range loops; defaults to literal 1
+    NodePtr iterable;  // non-null for `for value in list<T>` loops
     NodePtr body;       // a BlockStmt
-    // The numeric type of the counter and the bounds: INT unless any of
-    // start/end/step is DOUBLE. The checker decides this (it binds the loop
-    // variable to exactly this type), and lowering needs it to type the
-    // generated slots instead of hardcoding int.
+    // Range loop numeric type: INT unless any of start/end/step is DOUBLE.
     mutable bool isDoubleRange{false};
+    // Hidden storage bindings for a collection loop. The checker assigns
+    // these through SymbolTable so they cannot collide with source variables.
+    mutable std::string iterableStorageName;
+    mutable std::string indexStorageName;
     ForStmt() : AstNode(NodeKind::ForStmt) {}
 };
 

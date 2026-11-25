@@ -1,0 +1,10 @@
+// Regression fixture - invalid/type_errors - ForInNonList
+// for-in is currently defined for typed native lists; ranges retain their
+// existing `for i in start..end` syntax.
+class ForInNonList {
+    func main(): void {
+        for value in 42 {
+            log(value)
+        }
+    }
+}

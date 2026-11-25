@@ -504,6 +504,55 @@ void Compiler::compileIfStmt(const IfStmt* node) {
 // loopEnd:                         <- break jumps land here
 void Compiler::compileForStmt(const ForStmt* node) {
     std::size_t id = loopCounter_++;
+    if (node->iterable) {
+        const auto lengthIdx = findNativeFunction("Collection.length");
+        const auto getIdx = findNativeFunction("Collection.get");
+        if (!lengthIdx || !getIdx) throw std::runtime_error("Compiler: missing Collection iteration natives");
+        const std::string endName = "__for_end_" + std::to_string(id);
+
+        // Evaluate the collection exactly once and snapshot its initial length,
+        // matching the range loop's one-time evaluation of its end expression.
+        compileExpression(node->iterable.get());
+        emit(OpCode::DefineVar, chunk_.addName(node->iterableStorageName), node->line);
+        emit(OpCode::LoadVar, chunk_.addName(node->iterableStorageName), node->line);
+        emit(OpCode::CallNative, *lengthIdx, node->line);
+        emit(OpCode::DefineVar, chunk_.addName(endName), node->line);
+        emit(OpCode::PushConst, chunk_.addConstant(Value{std::int64_t{0}}), node->line);
+        emit(OpCode::DefineVar, chunk_.addName(node->indexStorageName), node->line);
+
+        const std::size_t loopStart = chunk_.code.size();
+        emit(OpCode::LoadVar, chunk_.addName(node->indexStorageName), node->line);
+        emit(OpCode::LoadVar, chunk_.addName(endName), node->line);
+        emit(OpCode::PushConst, chunk_.addConstant(Value{std::int64_t{1}}), node->line);
+        emit(OpCode::RangeContinue, 0, node->line);
+        const std::size_t exitJump = emit(OpCode::JumpIfFalse, 0, node->line);
+
+        emit(OpCode::LoadVar, chunk_.addName(node->iterableStorageName), node->line);
+        emit(OpCode::LoadVar, chunk_.addName(node->indexStorageName), node->line);
+        emit(OpCode::CallNative, *getIdx, node->line);
+        emit(OpCode::DefineVar, chunk_.addName(node->storageName), node->line);
+
+        loopStack_.push_back(LoopContext{});
+        loopStack_.back().handlerDepth = activeHandlerDepth_;
+        loopStack_.back().finallyDepth = activeFinallyBlocks_.size();
+        compileStatement(node->body.get());
+
+        const std::size_t incrementLabel = chunk_.code.size();
+        emit(OpCode::LoadVar, chunk_.addName(node->indexStorageName), node->line);
+        emit(OpCode::PushConst, chunk_.addConstant(Value{std::int64_t{1}}), node->line);
+        emit(OpCode::Add, 0, node->line);
+        emit(OpCode::DefineVar, chunk_.addName(node->indexStorageName), node->line);
+        emit(OpCode::Jump, loopStart, node->line);
+
+        const std::size_t loopEnd = chunk_.code.size();
+        patchJump(exitJump);
+        LoopContext ctx = std::move(loopStack_.back());
+        loopStack_.pop_back();
+        for (std::size_t idx : ctx.breakJumps) chunk_.code[idx].operand = loopEnd;
+        for (std::size_t idx : ctx.continueJumps) chunk_.code[idx].operand = incrementLabel;
+        return;
+    }
+
     std::string endName = "__for_end_" + std::to_string(id);
     std::string stepName = "__for_step_" + std::to_string(id);
 
