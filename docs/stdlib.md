@@ -24,15 +24,16 @@ that existed as a flat native before packages did: `Math`, `String`, `IO`, `Coll
 
 Everything else requires an explicit `import` — see [packages.md](packages.md).
 
-Beyond `zl.lang`, the bundled packages include typed queue and stack collections
-(`zl.util.Queue`, `zl.util.Stack`), text and time helpers, task/channel/thread facades,
+Beyond `zl.lang`, the bundled packages include typed queue, stack, and priority queue
+collections (`zl.util.Queue`, `zl.util.Stack`, `zl.util.PriorityQueue`), text and time helpers,
+task/channel/thread facades,
 serialization, filesystem access, hashing/encoding, logging, and a small portable DNS
 network facade.
 
 ## Generic collections
 
-`List<T>`, `Map<K,V>`, `Set<T>`, `Queue<T>` and `Stack<T>` are ZL classes over native
-storage primitives.
+`List<T>`, `Map<K,V>`, `Set<T>`, `Queue<T>`, `Stack<T>` and `PriorityQueue<T>` are ZL
+classes over native or list-backed storage primitives.
 Their methods are compiled once; each invocation carries the receiver's concrete
 type bindings. Typed literals and collections built by methods such as `transform`,
 `filter`, `reversed`, `keys`, and `values` retain those bindings, including nested
@@ -43,6 +44,20 @@ List<int> numbers = [1, 2, 3]
 List<int> doubled = numbers.transform(func(x) => x * 2)
 Map<string,int> ages = {"ada": 36}
 List<string> names = ages.keys()
+```
+
+`PriorityQueue<T>` is a comparator-driven binary heap. The comparator returns true
+when its first argument should be nearer the top: `a < b` gives a min-heap and
+`a > b` gives a max-heap. `enqueue` and `dequeue` are O(log n), `peek` is O(1),
+and `heapify(List<T>)` builds a heap in O(n). Equal-priority values are not stable.
+
+```zl
+import zl.util.PriorityQueue
+
+var next = new PriorityQueue<int>(func(int a, int b) => a < b)
+next.enqueue(8)
+next.enqueue(3)
+log(next.peek()) // 3
 ```
 
 The returned collections can be passed to typed parameters normally; there is no

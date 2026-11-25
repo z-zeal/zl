@@ -1,5 +1,12 @@
 // Regression fixture - valid/language_hardening_tests - LeetCodeStyleHarness
 // A small function-based judge harness around familiar Solution methods.
+import zl.util.PriorityQueue
+
+data PriorityEntry {
+    priority: int
+    label: string
+}
+
 class Solution {
     public func twoSum(List<int> nums, int target): List<int> {
         var previousIndex = new Map<int, int>()
@@ -107,6 +114,30 @@ class Solution {
         }
         return oneBefore
     }
+
+    public func kthLargest(List<int> nums, int k): int {
+        var smallestOfLargest = new PriorityQueue<int>(func(int a, int b) => a < b)
+        for i in 0..nums.length() {
+            smallestOfLargest.enqueue(nums.get(i))
+            if (smallestOfLargest.length() > k) {
+                smallestOfLargest.dequeue()
+            }
+        }
+        return smallestOfLargest.peek()
+    }
+
+    public func lastStoneWeight(List<int> stones): int {
+        var heaviest = new PriorityQueue<int>(func(int a, int b) => a > b)
+        heaviest.heapify(stones)
+        while (heaviest.length() > 1) {
+            int first = heaviest.dequeue()
+            int second = heaviest.dequeue()
+            if (first > second) {
+                heaviest.enqueue(first - second)
+            }
+        }
+        return heaviest.peekOr(0)
+    }
 }
 
 class LeetCodeStyleHarness {
@@ -168,6 +199,43 @@ class LeetCodeStyleHarness {
                                    merged.get(5) == 4, "Merge Two Sorted Arrays")
 
         LeetCodeStyleHarness.check(solution.climbStairs(5) == 8, "Climbing Stairs")
+
+        var heapInput = new List<int>()
+        heapInput.push(3)
+        heapInput.push(2)
+        heapInput.push(1)
+        heapInput.push(5)
+        heapInput.push(6)
+        heapInput.push(4)
+        LeetCodeStyleHarness.check(solution.kthLargest(heapInput, 2) == 5, "Kth Largest via min-heap")
+
+        var stones = new List<int>()
+        stones.push(2)
+        stones.push(7)
+        stones.push(4)
+        stones.push(1)
+        stones.push(8)
+        stones.push(1)
+        LeetCodeStyleHarness.check(solution.lastStoneWeight(stones) == 1, "Last Stone Weight via max-heap")
+
+        var emptyHeap = new PriorityQueue<int>(func(int a, int b) => a < b)
+        LeetCodeStyleHarness.check(emptyHeap.peekOr(-1) == -1 && emptyHeap.dequeueOr(-2) == -2,
+                                   "empty priority queue fallbacks")
+        emptyHeap.enqueueAll(heapInput)
+        LeetCodeStyleHarness.check(emptyHeap.peek() == 1, "bulk enqueue ordering")
+        emptyHeap.clear()
+        emptyHeap.heapify(new List<int>())
+        LeetCodeStyleHarness.check(emptyHeap.isEmpty(), "clear and heapify empty list")
+
+        var customHeap = new PriorityQueue<PriorityEntry>(
+            func(PriorityEntry a, PriorityEntry b) => a.priority < b.priority)
+        customHeap.enqueue(PriorityEntry { priority: 5, label: "later" })
+        customHeap.enqueue(PriorityEntry { priority: 1, label: "first" })
+        customHeap.enqueue(PriorityEntry { priority: 3, label: "middle" })
+        LeetCodeStyleHarness.check(customHeap.dequeue().label == "first" &&
+                                   customHeap.dequeue().label == "middle" &&
+                                   customHeap.dequeue().label == "later",
+                                   "generic comparator over record values")
         log("ok")
     }
 }

@@ -6,10 +6,10 @@ This matrix is generated from the repository's compiler builtin library, native 
 
 ## Source invariants
 
-- Native catalog entries: **246**
-- VM native bindings: **246**
-- Compiler embedded builtin classes: **32**
-- Visible stdlib `.zl` files: **26**
+- Native catalog entries: **258**
+- VM native bindings: **258**
+- Compiler embedded builtin classes: **35**
+- Visible stdlib `.zl` files: **27**
 - Native catalog IDs and VM binding IDs: **exact match**
 
 ## Ownership metadata finding
@@ -21,9 +21,9 @@ The native catalog type supports parameter and return ownership metadata, and th
 | Domain | Count | Source/facade | Status |
 |---|---:|---|---|
 | `Reflection` | 33 | compiler builtin: Reflection | implemented |
+| `String` | 31 | stdlib: zl.text.Text + primitive String surface | implemented |
 | `Math` | 23 | compiler builtin: Math | implemented |
 | `FileSystem` | 22 | stdlib: zl.fs.FileSystem | implemented |
-| `String` | 20 | stdlib: zl.text.Text + primitive String surface | implemented |
 | `Collection` | 18 | compiler builtin: List/Map/Set | implemented |
 | `Time` | 17 | stdlib: zl.time.* | implemented |
 | `Type` | 10 | compiler builtin: Type | implemented |
@@ -46,6 +46,7 @@ The native catalog type supports parameter and return ownership metadata, and th
 | `RwLock` | 2 | stdlib: zl.lang.RwLock | implemented |
 | `Bool` | 1 | compiler/runtime primitive | implemented |
 | `Double` | 1 | compiler/runtime primitive | implemented |
+| `GC` | 1 | compiler/runtime native surface | implemented |
 | `Hash` | 1 | compiler/runtime primitive | implemented |
 | `Int` | 1 | compiler/runtime primitive | implemented |
 | `Mutex` | 1 | stdlib: zl.lang.Mutex | implemented |
@@ -88,6 +89,9 @@ The native catalog type supports parameter and return ownership metadata, and th
 | `Method` | compiler embedded builtin |
 | `Constructor` | compiler embedded builtin |
 | `Function` | compiler embedded builtin |
+| `MemoryShape` | compiler embedded builtin |
+| `MemorySlot` | compiler embedded builtin |
+| `MemoryStats` | compiler embedded builtin |
 
 ## Stdlib source modules
 
@@ -117,6 +121,7 @@ The native catalog type supports parameter and return ownership metadata, and th
 | `stdlib/zl/time/Duration.zl` | `Duration` | `Duration, seconds, minutes, hours, milliseconds, add, subtract, negate, abs, isZero, isNegative, isPositive, compare` | `—` |
 | `stdlib/zl/time/Time.zl` | `Time` | `nowDateTime, today, clock, dateTimeAt, dateAt, durationMillis, durationSeconds, durationMinutes, durationHours, durationDays, between, sleepMillis, sleepDuration, elapsedMillisSince, addSeconds, addMinutes, addHours, addDays, addWeeks, addMonths, addYears, dayNumber, diffSeconds, diffMinutes, diffHours, diffDays, compare, isBefore, isAfter, isBetween, min, max, daysInMonth, isWeekend, weekdayName, monthName, startOfDay, endOfDay, isSameDay, isoDate, isoTime, isoDateTime, isoUtc` | `zl.time.Calendar, zl.time.DateTime, zl.time.Date, zl.time.TimeOfDay, zl.time.Duration` |
 | `stdlib/zl/time/TimeOfDay.zl` | `TimeOfDay` | `TimeOfDay, of, now, hour, minute, second, totalSeconds, totalMinutes, format, iso, short, toString, addSeconds, addMinutes, addHours, subtractSeconds, subtractMinutes, subtractHours, secondsUntil, difference, isMorning, isAfternoon, isEvening, compare, isBefore, isAfter, equals, isBetween` | `zl.time.Duration` |
+| `stdlib/zl/util/PriorityQueue.zl` | `PriorityQueue` | `PriorityQueue, enqueue, enqueueAll, heapify, peek, dequeue, peekOr, dequeueOr, length, isEmpty, isNotEmpty, clear` | `—` |
 | `stdlib/zl/util/Queue.zl` | `Queue` | `Queue, enqueue, dequeue, peek, length, isEmpty, isNotEmpty, dequeueOr, peekOr, enqueueAll, clear, drain, items, contains, forEach` | `—` |
 | `stdlib/zl/util/Stack.zl` | `Stack` | `Stack, push, pop, peek, length, isEmpty, isNotEmpty, popOr, peekOr, pushAll, clear, drain, items, contains, forEach` | `—` |
 
@@ -233,6 +238,8 @@ The native catalog type supports parameter and return ownership metadata, and th
 | `STRING_LOWER` | `String.lower` | `String` | stdlib: zl.text.Text + primitive String surface | implemented | not explicitly declared in native catalog entry; default NONE |
 | `STRING_TRIM` | `String.trim` | `String` | stdlib: zl.text.Text + primitive String surface | implemented | not explicitly declared in native catalog entry; default NONE |
 | `STRING_CONTAINS` | `String.contains` | `String` | stdlib: zl.text.Text + primitive String surface | implemented | not explicitly declared in native catalog entry; default NONE |
+| `STRING_STARTSWITH` | `String.startsWith` | `String` | stdlib: zl.text.Text + primitive String surface | implemented | not explicitly declared in native catalog entry; default NONE |
+| `STRING_ENDSWITH` | `String.endsWith` | `String` | stdlib: zl.text.Text + primitive String surface | implemented | not explicitly declared in native catalog entry; default NONE |
 | `STRING_INDEXOF` | `String.indexOf` | `String` | stdlib: zl.text.Text + primitive String surface | implemented | not explicitly declared in native catalog entry; default NONE |
 | `STRING_CHARAT` | `String.charAt` | `String` | stdlib: zl.text.Text + primitive String surface | implemented | not explicitly declared in native catalog entry; default NONE |
 | `STRING_SUBSTRING` | `String.substring` | `String` | stdlib: zl.text.Text + primitive String surface | implemented | not explicitly declared in native catalog entry; default NONE |
@@ -248,6 +255,15 @@ The native catalog type supports parameter and return ownership metadata, and th
 | `STRING_COMPAREIGNORECASE` | `String.compareIgnoreCase` | `String` | stdlib: zl.text.Text + primitive String surface | implemented | not explicitly declared in native catalog entry; default NONE |
 | `STRING_CODEPOINTAT` | `String.codePointAt` | `String` | stdlib: zl.text.Text + primitive String surface | implemented | not explicitly declared in native catalog entry; default NONE |
 | `STRING_FROMCODEPOINT` | `String.fromCodePoint` | `String` | stdlib: zl.text.Text + primitive String surface | implemented | not explicitly declared in native catalog entry; default NONE |
+| `STRING_REPEAT` | `String.repeatText` | `String` | stdlib: zl.text.Text + primitive String surface | implemented | not explicitly declared in native catalog entry; default NONE |
+| `STRING_UTF8LENGTH` | `String.utf8Length` | `String` | stdlib: zl.text.Text + primitive String surface | implemented | not explicitly declared in native catalog entry; default NONE |
+| `STRING_UTF8CHARAT` | `String.utf8CharAt` | `String` | stdlib: zl.text.Text + primitive String surface | implemented | not explicitly declared in native catalog entry; default NONE |
+| `STRING_UTF8SUBSTRING` | `String.utf8Substring` | `String` | stdlib: zl.text.Text + primitive String surface | implemented | not explicitly declared in native catalog entry; default NONE |
+| `STRING_UTF8REVERSE` | `String.utf8Reverse` | `String` | stdlib: zl.text.Text + primitive String surface | implemented | not explicitly declared in native catalog entry; default NONE |
+| `STRING_UTF8CODEPOINTAT` | `String.utf8CodePointAt` | `String` | stdlib: zl.text.Text + primitive String surface | implemented | not explicitly declared in native catalog entry; default NONE |
+| `STRING_UTF8FROMCODEPOINT` | `String.utf8FromCodePoint` | `String` | stdlib: zl.text.Text + primitive String surface | implemented | not explicitly declared in native catalog entry; default NONE |
+| `STRING_UTF8BYTEINDEX` | `String.utf8ByteIndex` | `String` | stdlib: zl.text.Text + primitive String surface | implemented | not explicitly declared in native catalog entry; default NONE |
+| `STRING_UTF8INDEXFROMBYTE` | `String.utf8IndexFromByte` | `String` | stdlib: zl.text.Text + primitive String surface | implemented | not explicitly declared in native catalog entry; default NONE |
 | `FILESYSTEM_READFILE` | `FileSystem.readFile` | `FileSystem` | stdlib: zl.fs.FileSystem | implemented | not explicitly declared in native catalog entry; default NONE |
 | `FILESYSTEM_WRITEFILE` | `FileSystem.writeFile` | `FileSystem` | stdlib: zl.fs.FileSystem | implemented | not explicitly declared in native catalog entry; default NONE |
 | `FILESYSTEM_APPENDFILE` | `FileSystem.appendFile` | `FileSystem` | stdlib: zl.fs.FileSystem | implemented | not explicitly declared in native catalog entry; default NONE |
@@ -370,3 +386,4 @@ The native catalog type supports parameter and return ownership metadata, and th
 | `INT_PARSE` | `Int.parse` | `Int` | compiler/runtime primitive | implemented | not explicitly declared in native catalog entry; default NONE |
 | `DOUBLE_PARSE` | `Double.parse` | `Double` | compiler/runtime primitive | implemented | not explicitly declared in native catalog entry; default NONE |
 | `BOOL_PARSE` | `Bool.parse` | `Bool` | compiler/runtime primitive | implemented | not explicitly declared in native catalog entry; default NONE |
+| `GC_STATS` | `GC.stats` | `GC` | compiler/runtime native surface | implemented | not explicitly declared in native catalog entry; default NONE |

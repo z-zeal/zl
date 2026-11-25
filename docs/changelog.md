@@ -1,13 +1,15 @@
 # Development Checkpoints
 
-## 2026-11-22 - add a LeetCode-style algorithm harness
+## 2026-11-22 - add a LeetCode-style algorithm harness and priority queue
 
-A standalone `Solution` class and deterministic harness now exercise six
-representative patterns: Two Sum, Binary Search, Maximum Subarray, Valid
-Parentheses, merging sorted arrays, and Climbing Stairs. The harness runs through
-both AST/reference and MIR compiler paths. `docs/leetcode-style.md` explains
-what the smoke test covers and what a real judge adapter still needs. The fixture passes on both compiler paths;
-regressions 124/124, CTest 44/44, and the native gate pass.
+The `Solution` fixture now covers eight patterns: Two Sum, Binary Search, Maximum
+Subarray, Valid Parentheses, merging sorted arrays, Climbing Stairs, Kth Largest,
+and Last Stone Weight. Added `zl.util.PriorityQueue<T>`, a comparator-driven
+binary heap with O(log n) enqueue/dequeue and O(n) `heapify`; tests cover min/max
+ordering, empty fallbacks, bulk heapification, and record comparators. The harness
+passes on AST/reference and MIR paths. `docs/leetcode-style.md` explains what the
+smoke test covers and what a real judge adapter still needs. Regressions 124/124,
+CTest 44/44, and the native gate pass.
 
 ## 2026-11-22 - make List sorting stable and O(n log n)
 
