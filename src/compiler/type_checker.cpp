@@ -3556,17 +3556,32 @@ void TypeChecker::checkForStmt(const ForStmt* node) {
         const TypeName collectionName = collection.className.empty()
                                             ? TypeName{}
                                             : parseTypeName(collection.className);
+        using IterableKind = ForStmt::IterableKind;
         const bool nativeList = collection.type == ZlType::LIST &&
                                 (collection.className.empty() || collectionName.name == "list");
         const bool listWrapper = collection.type == ZlType::OBJECT &&
                                  collectionName.name == "List" && collectionName.args.size() == 1;
-        if (!nativeList && !listWrapper) {
-            typeError("for-in requires a list<T> or List<T> collection", node->line);
+        const bool nativeSet = collection.type == ZlType::SET &&
+                               (collection.className.empty() || collectionName.name == "set");
+        const bool setWrapper = collection.type == ZlType::OBJECT &&
+                                collectionName.name == "Set" && collectionName.args.size() == 1;
+        const bool nativeMap = collection.type == ZlType::MAP &&
+                               (collection.className.empty() || collectionName.name == "map");
+        const bool mapWrapper = collection.type == ZlType::OBJECT &&
+                                collectionName.name == "Map" && collectionName.args.size() == 2;
+        if (!nativeList && !listWrapper && !nativeSet && !setWrapper && !nativeMap && !mapWrapper) {
+            typeError("for-in requires a list, set, or map collection", node->line);
         }
-        node->isListWrapper = listWrapper;
+        if (nativeList) node->iterableKind = IterableKind::NativeList;
+        else if (listWrapper) node->iterableKind = IterableKind::ListWrapper;
+        else if (nativeSet) node->iterableKind = IterableKind::NativeSet;
+        else if (setWrapper) node->iterableKind = IterableKind::SetWrapper;
+        else if (nativeMap) node->iterableKind = IterableKind::NativeMap;
+        else node->iterableKind = IterableKind::MapWrapper;
 
         TypeAnnotation elementAnnotation;
-        if (collectionName.args.size() == 1) {
+        if (!collectionName.args.empty()) {
+            // Lists and sets yield their element; maps yield their key.
             elementAnnotation = typeAnnotationFromName(collectionName.args.front());
         } else {
             elementAnnotation.name = "unknown";
@@ -3579,6 +3594,10 @@ void TypeChecker::checkForStmt(const ForStmt* node) {
         collectionInfo.className = collection.className;
         collectionInfo.ownership = collection.ownership;
         node->iterableStorageName = symbols_.defineVar("\x01for_iterable", std::move(collectionInfo)).storageName;
+        SymbolTable::VarInfo snapshotInfo;
+        snapshotInfo.type = ZlType::LIST;
+        snapshotInfo.className = "list<" + elementInfo.runtimeTypeName() + ">";
+        node->iterationStorageName = symbols_.defineVar("\x01for_snapshot", std::move(snapshotInfo)).storageName;
         node->indexStorageName = symbols_.defineVar("\x01for_index", ZlType::INT, false).storageName;
         node->storageName = symbols_.defineVar(node->varName, elementInfo).storageName;
     } else {

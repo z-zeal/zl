@@ -361,16 +361,30 @@ the native signature catalog rather than in library-specific compiler branches.
 
 ## Generic collections
 
-Typed native `list<T>` values and the high-level `List<T>` wrapper can be
-traversed directly with `for value in list`. The collection expression is
-evaluated once, and the loop captures its initial length; the inferred element
-type is available in the body. Maps and sets are not iterable with this form
-yet; numeric ranges remain `for i in start..end` with an optional `step`.
+Native `list<T>` and `List<T>` values, native `set<T>` and `Set<T>` values,
+and native `map<K,V>` and `Map<K,V>` values can be traversed with `for value in
+collection`. Lists yield elements, sets yield elements, and maps yield keys.
+The collection expression is evaluated once; the loop captures its initial
+length. Set elements and map keys are snapshotted before the loop, and their
+iteration order is unspecified. The inferred element/key type is available in
+the body. Numeric ranges remain `for i in start..end` with an optional `step`.
 
 ```zl
 list<string> names = ["Ada", "Grace"]
 for name in names {
     log(name)
+}
+
+var tags = new Set<string>()
+tags.add("compiler")
+for tag in tags {
+    log(tag)
+}
+
+var scores = new Map<string, int>()
+scores.put("Ada", 98)
+for name in scores {               // maps yield keys
+    log(name + ": " + scores.get(name))
 }
 ```
 

@@ -408,12 +408,16 @@ struct ForStmt : AstNode {
     NodePtr body;       // a BlockStmt
     // Range loop numeric type: INT unless any of start/end/step is DOUBLE.
     mutable bool isDoubleRange{false};
-    // True when the iterable is the generic List<T> wrapper; its native storage
-    // lives in the compiler-known `__native` field rather than being the list.
-    mutable bool isListWrapper{false};
+    enum class IterableKind : std::uint8_t {
+        NativeList, ListWrapper, NativeSet, SetWrapper, NativeMap, MapWrapper
+    };
+    // Map iteration yields keys; set iteration yields elements. Wrapper kinds
+    // read the native backing container from `__native` before snapshotting.
+    mutable IterableKind iterableKind{IterableKind::NativeList};
     // Hidden storage bindings for a collection loop. The checker assigns
     // these through SymbolTable so they cannot collide with source variables.
     mutable std::string iterableStorageName;
+    mutable std::string iterationStorageName;
     mutable std::string indexStorageName;
     ForStmt() : AstNode(NodeKind::ForStmt) {}
 };

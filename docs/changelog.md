@@ -1,5 +1,17 @@
 # Development Checkpoints
 
+## 2026-11-22 - iterate sets and map keys with for-in
+
+For-in now covers all six collection forms: native `list<T>`, `List<T>`,
+native `set<T>`, `Set<T>`, native `map<K,V>`, and `Map<K,V>`. Lists and sets
+yield elements; maps yield keys. Set elements and map keys are converted to a
+list snapshot before entering the loop, so mutations during the body do not
+change the iteration set; their order is unspecified. The source expression is
+still evaluated once. `ForInCollections.zl` covers native and wrapper lists, sets, and
+maps on both AST and MIR paths.
+
+Gates: examples 52/52, regressions 117/117, ctest 44/44, native gate PASS.
+
 ## 2026-11-22 - also iterate the high-level `List<T>` wrapper
 
 The first `for value in list<T>` implementation handled native lowercase
@@ -9,7 +21,7 @@ unwraps the compiler-known `__native` backing field; source-level evaluation
 still happens once, and the initial length is still snapshotted. Maps and sets
 remain out of scope.
 
-`ForInList.zl` now covers both native `list<T>` and `List<T>` on AST and MIR.
+`ForInCollections.zl` now covers both native `list<T>` and `List<T>` on AST and MIR.
 Gates: examples 52/52, regressions 117/117, ctest 44/44, and native gate PASS.
 
 ## 2026-11-22 - iterate a native list with `for value in values`
@@ -29,7 +41,7 @@ captured before iteration. Element types flow into the body; `break` and
 (maps, sets, and the `List<T>` wrapper class) are intentionally not supported by
 this first form. The reflection guide and the native-list example now use it.
 
-Gates: `ForInList.zl` and `ForInNonList.zl` pass on both AST and MIR paths;
+Gates: `ForInCollections.zl` and `ForInNonList.zl` pass on both AST and MIR paths;
 examples 52/52, default regressions 117/117, ctest 44/44, and native gate PASS.
 The full AST regression sweep reports one failure in the unrelated
 `IncompleteStubRefusal` case; the other 116 cases pass.

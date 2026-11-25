@@ -505,22 +505,35 @@ void Compiler::compileIfStmt(const IfStmt* node) {
 void Compiler::compileForStmt(const ForStmt* node) {
     std::size_t id = loopCounter_++;
     if (node->iterable) {
+        using IterableKind = ForStmt::IterableKind;
         const auto lengthIdx = findNativeFunction("Collection.length");
         const auto getIdx = findNativeFunction("Collection.get");
-        if (!lengthIdx || !getIdx) throw std::runtime_error("Compiler: missing Collection iteration natives");
+        const auto setItemsIdx = findNativeFunction("Collection.setItems");
+        const auto mapKeysIdx = findNativeFunction("Collection.mapKeys");
+        if (!lengthIdx || !getIdx || !setItemsIdx || !mapKeysIdx)
+            throw std::runtime_error("Compiler: missing Collection iteration natives");
         const std::string endName = "__for_end_" + std::to_string(id);
+        const bool wrapper = node->iterableKind == IterableKind::ListWrapper ||
+                             node->iterableKind == IterableKind::SetWrapper ||
+                             node->iterableKind == IterableKind::MapWrapper;
 
-        // Evaluate the collection exactly once and snapshot its initial length,
-        // matching the range loop's one-time evaluation of its end expression.
+        // Evaluate the source exactly once, then normalize it to a native list.
+        // Set and map native helpers produce a snapshot of elements or keys;
+        // list sources retain their original list identity.
         compileExpression(node->iterable.get());
         emit(OpCode::DefineVar, chunk_.addName(node->iterableStorageName), node->line);
-        auto loadRawList = [&]() {
+        auto loadRawCollection = [&]() {
             emit(OpCode::LoadVar, chunk_.addName(node->iterableStorageName), node->line);
-            if (node->isListWrapper) {
-                emit(OpCode::GetField, chunk_.addName("__native"), node->line);
-            }
+            if (wrapper) emit(OpCode::GetField, chunk_.addName("__native"), node->line);
         };
-        loadRawList();
+        loadRawCollection();
+        if (node->iterableKind == IterableKind::NativeSet || node->iterableKind == IterableKind::SetWrapper) {
+            emit(OpCode::CallNative, *setItemsIdx, node->line);
+        } else if (node->iterableKind == IterableKind::NativeMap || node->iterableKind == IterableKind::MapWrapper) {
+            emit(OpCode::CallNative, *mapKeysIdx, node->line);
+        }
+        emit(OpCode::DefineVar, chunk_.addName(node->iterationStorageName), node->line);
+        emit(OpCode::LoadVar, chunk_.addName(node->iterationStorageName), node->line);
         emit(OpCode::CallNative, *lengthIdx, node->line);
         emit(OpCode::DefineVar, chunk_.addName(endName), node->line);
         emit(OpCode::PushConst, chunk_.addConstant(Value{std::int64_t{0}}), node->line);
@@ -533,7 +546,7 @@ void Compiler::compileForStmt(const ForStmt* node) {
         emit(OpCode::RangeContinue, 0, node->line);
         const std::size_t exitJump = emit(OpCode::JumpIfFalse, 0, node->line);
 
-        loadRawList();
+        emit(OpCode::LoadVar, chunk_.addName(node->iterationStorageName), node->line);
         emit(OpCode::LoadVar, chunk_.addName(node->indexStorageName), node->line);
         emit(OpCode::CallNative, *getIdx, node->line);
         emit(OpCode::DefineVar, chunk_.addName(node->storageName), node->line);
