@@ -9,17 +9,17 @@
     "docs/reference/STDLIB_REFERENCE.md"
   ],
   "invariants": {
-    "native_catalog_entries": 246,
-    "native_runtime_bindings": 246,
+    "native_catalog_entries": 258,
+    "native_runtime_bindings": 258,
     "native_catalog_runtime_ids_match": true,
-    "builtin_class_count": 32,
-    "stdlib_zl_file_count": 26
+    "builtin_class_count": 35,
+    "stdlib_zl_file_count": 27
   },
   "native_domain_counts": {
     "Reflection": 33,
+    "String": 31,
     "Math": 23,
     "FileSystem": 22,
-    "String": 20,
     "Collection": 18,
     "Time": 17,
     "Type": 10,
@@ -42,6 +42,7 @@
     "RwLock": 2,
     "Bool": 1,
     "Double": 1,
+    "GC": 1,
     "Hash": 1,
     "Int": 1,
     "Mutex": 1,
@@ -175,6 +176,18 @@
     },
     {
       "name": "Function",
+      "source_layer": "compiler embedded builtin"
+    },
+    {
+      "name": "MemoryShape",
+      "source_layer": "compiler embedded builtin"
+    },
+    {
+      "name": "MemorySlot",
+      "source_layer": "compiler embedded builtin"
+    },
+    {
+      "name": "MemoryStats",
       "source_layer": "compiler embedded builtin"
     }
   ],
@@ -784,6 +797,27 @@
         "isAfter",
         "equals",
         "isBetween"
+      ]
+    },
+    {
+      "path": "stdlib/zl/util/PriorityQueue.zl",
+      "classes": [
+        "PriorityQueue"
+      ],
+      "imports": [],
+      "methods": [
+        "PriorityQueue",
+        "enqueue",
+        "enqueueAll",
+        "heapify",
+        "peek",
+        "dequeue",
+        "peekOr",
+        "dequeueOr",
+        "length",
+        "isEmpty",
+        "isNotEmpty",
+        "clear"
       ]
     },
     {
@@ -1818,6 +1852,24 @@
       "ownership_metadata": "not explicitly declared in native catalog entry; default NONE"
     },
     {
+      "native_id": "STRING_STARTSWITH",
+      "qualified_name": "String.startsWith",
+      "domain": "String",
+      "source_layer": "native catalog + VM native runtime",
+      "public_surface": "stdlib: zl.text.Text + primitive String surface",
+      "status": "implemented",
+      "ownership_metadata": "not explicitly declared in native catalog entry; default NONE"
+    },
+    {
+      "native_id": "STRING_ENDSWITH",
+      "qualified_name": "String.endsWith",
+      "domain": "String",
+      "source_layer": "native catalog + VM native runtime",
+      "public_surface": "stdlib: zl.text.Text + primitive String surface",
+      "status": "implemented",
+      "ownership_metadata": "not explicitly declared in native catalog entry; default NONE"
+    },
+    {
       "native_id": "STRING_INDEXOF",
       "qualified_name": "String.indexOf",
       "domain": "String",
@@ -1946,6 +1998,87 @@
     {
       "native_id": "STRING_FROMCODEPOINT",
       "qualified_name": "String.fromCodePoint",
+      "domain": "String",
+      "source_layer": "native catalog + VM native runtime",
+      "public_surface": "stdlib: zl.text.Text + primitive String surface",
+      "status": "implemented",
+      "ownership_metadata": "not explicitly declared in native catalog entry; default NONE"
+    },
+    {
+      "native_id": "STRING_REPEAT",
+      "qualified_name": "String.repeatText",
+      "domain": "String",
+      "source_layer": "native catalog + VM native runtime",
+      "public_surface": "stdlib: zl.text.Text + primitive String surface",
+      "status": "implemented",
+      "ownership_metadata": "not explicitly declared in native catalog entry; default NONE"
+    },
+    {
+      "native_id": "STRING_UTF8LENGTH",
+      "qualified_name": "String.utf8Length",
+      "domain": "String",
+      "source_layer": "native catalog + VM native runtime",
+      "public_surface": "stdlib: zl.text.Text + primitive String surface",
+      "status": "implemented",
+      "ownership_metadata": "not explicitly declared in native catalog entry; default NONE"
+    },
+    {
+      "native_id": "STRING_UTF8CHARAT",
+      "qualified_name": "String.utf8CharAt",
+      "domain": "String",
+      "source_layer": "native catalog + VM native runtime",
+      "public_surface": "stdlib: zl.text.Text + primitive String surface",
+      "status": "implemented",
+      "ownership_metadata": "not explicitly declared in native catalog entry; default NONE"
+    },
+    {
+      "native_id": "STRING_UTF8SUBSTRING",
+      "qualified_name": "String.utf8Substring",
+      "domain": "String",
+      "source_layer": "native catalog + VM native runtime",
+      "public_surface": "stdlib: zl.text.Text + primitive String surface",
+      "status": "implemented",
+      "ownership_metadata": "not explicitly declared in native catalog entry; default NONE"
+    },
+    {
+      "native_id": "STRING_UTF8REVERSE",
+      "qualified_name": "String.utf8Reverse",
+      "domain": "String",
+      "source_layer": "native catalog + VM native runtime",
+      "public_surface": "stdlib: zl.text.Text + primitive String surface",
+      "status": "implemented",
+      "ownership_metadata": "not explicitly declared in native catalog entry; default NONE"
+    },
+    {
+      "native_id": "STRING_UTF8CODEPOINTAT",
+      "qualified_name": "String.utf8CodePointAt",
+      "domain": "String",
+      "source_layer": "native catalog + VM native runtime",
+      "public_surface": "stdlib: zl.text.Text + primitive String surface",
+      "status": "implemented",
+      "ownership_metadata": "not explicitly declared in native catalog entry; default NONE"
+    },
+    {
+      "native_id": "STRING_UTF8FROMCODEPOINT",
+      "qualified_name": "String.utf8FromCodePoint",
+      "domain": "String",
+      "source_layer": "native catalog + VM native runtime",
+      "public_surface": "stdlib: zl.text.Text + primitive String surface",
+      "status": "implemented",
+      "ownership_metadata": "not explicitly declared in native catalog entry; default NONE"
+    },
+    {
+      "native_id": "STRING_UTF8BYTEINDEX",
+      "qualified_name": "String.utf8ByteIndex",
+      "domain": "String",
+      "source_layer": "native catalog + VM native runtime",
+      "public_surface": "stdlib: zl.text.Text + primitive String surface",
+      "status": "implemented",
+      "ownership_metadata": "not explicitly declared in native catalog entry; default NONE"
+    },
+    {
+      "native_id": "STRING_UTF8INDEXFROMBYTE",
+      "qualified_name": "String.utf8IndexFromByte",
       "domain": "String",
       "source_layer": "native catalog + VM native runtime",
       "public_surface": "stdlib: zl.text.Text + primitive String surface",
@@ -3047,6 +3180,15 @@
       "domain": "Bool",
       "source_layer": "native catalog + VM native runtime",
       "public_surface": "compiler/runtime primitive",
+      "status": "implemented",
+      "ownership_metadata": "not explicitly declared in native catalog entry; default NONE"
+    },
+    {
+      "native_id": "GC_STATS",
+      "qualified_name": "GC.stats",
+      "domain": "GC",
+      "source_layer": "native catalog + VM native runtime",
+      "public_surface": "compiler/runtime native surface",
       "status": "implemented",
       "ownership_metadata": "not explicitly declared in native catalog entry; default NONE"
     }

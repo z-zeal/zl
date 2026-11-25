@@ -1,0 +1,116 @@
+// zl.util.PriorityQueue - comparator-driven binary heap.
+//
+// The comparator answers whether its first argument should be nearer the top
+// than its second. Use `a < b` for a min-heap and `a > b` for a max-heap.
+// The heap is not stable for equal-priority values.
+class PriorityQueue<T> {
+    List<T> __items
+    func(T, T): bool __higherPriority
+
+    func PriorityQueue(func(T, T): bool higherPriority): void {
+        this.__items = new List<T>()
+        this.__higherPriority = higherPriority
+    }
+
+    private func siftUp(int index): void {
+        func(T, T): bool higher = this.__higherPriority
+        var child = index
+        while (child > 0) {
+            int parent = (child - 1) / 2
+            if (!higher(this.__items.get(child), this.__items.get(parent))) {
+                return
+            }
+            this.__items.swap(child, parent)
+            child = parent
+        }
+    }
+
+    private func siftDown(int index): void {
+        func(T, T): bool higher = this.__higherPriority
+        int parent = index
+        int count = this.__items.length()
+        while (true) {
+            int best = parent
+            int left = parent * 2 + 1
+            int right = left + 1
+            if (left < count && higher(this.__items.get(left), this.__items.get(best))) {
+                best = left
+            }
+            if (right < count && higher(this.__items.get(right), this.__items.get(best))) {
+                best = right
+            }
+            if (best == parent) {
+                return
+            }
+            this.__items.swap(parent, best)
+            parent = best
+        }
+    }
+
+    public func enqueue(T item): void {
+        this.__items.push(item)
+        this.siftUp(this.__items.length() - 1)
+    }
+
+    public func enqueueAll(List<T> values): void {
+        for i in 0..values.length() {
+            this.enqueue(values.get(i))
+        }
+    }
+
+    // Replace the contents and build a heap in O(n) time.
+    public func heapify(List<T> values): void {
+        this.__items = values.copy()
+        int parent = this.__items.length() / 2 - 1
+        while (parent >= 0) {
+            this.siftDown(parent)
+            parent = parent - 1
+        }
+    }
+
+    public func peek(): T {
+        if (this.isEmpty()) {
+            throw new Exception("PriorityQueue.peek called on empty queue")
+        }
+        return this.__items.get(0)
+    }
+
+    public func dequeue(): T {
+        if (this.isEmpty()) {
+            throw new Exception("PriorityQueue.dequeue called on empty queue")
+        }
+        T result = this.__items.get(0)
+        T last = this.__items.pop()
+        if (!this.isEmpty()) {
+            this.__items.put(0, last)
+            this.siftDown(0)
+        }
+        return result
+    }
+
+    public func peekOr(T fallback): T {
+        if (this.isEmpty()) { return fallback }
+        return this.peek()
+    }
+
+    public func dequeueOr(T fallback): T {
+        if (this.isEmpty()) { return fallback }
+        return this.dequeue()
+    }
+
+    public func length(): int {
+        return this.__items.length()
+    }
+
+    public func isEmpty(): bool {
+        return this.__items.isEmpty()
+    }
+
+    public func isNotEmpty(): bool {
+        return !this.isEmpty()
+    }
+
+    public func clear(): void {
+        this.__items.clear()
+    }
+}

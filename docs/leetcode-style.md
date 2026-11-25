@@ -6,7 +6,7 @@ platform's serialized test input. The regression fixture
 closest equivalent: a `Solution` class with public typed methods plus a separate
 harness that constructs inputs and checks expected results.
 
-The fixture exercises six familiar patterns:
+The fixture exercises eight familiar patterns:
 
 | Problem pattern | ZL features exercised |
 | --- | --- |
@@ -16,6 +16,8 @@ The fixture exercises six familiar patterns:
 | Valid Parentheses | string slicing and a typed stack (`List<string>`) |
 | Merge Two Sorted Arrays | two pointers and list construction |
 | Climbing Stairs | constant-space dynamic programming |
+| Kth Largest Element | bounded min-heap |
+| Last Stone Weight | max-heap and repeated extraction |
 
 Run both compiler paths from the repository root after building `zl_language`:
 
