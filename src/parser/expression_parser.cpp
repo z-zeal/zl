@@ -50,7 +50,13 @@ std::optional<InfixBinding> infixBinding(TokenType type) {
         case TokenType::MINUS_EQ:
         case TokenType::STAR_EQ:
         case TokenType::SLASH_EQ:
-        case TokenType::PERCENT_EQ: return InfixBinding{1, 1};  // right-associative
+        case TokenType::PERCENT_EQ:
+        case TokenType::BIT_AND_EQ:
+        case TokenType::BIT_OR_EQ:
+        case TokenType::BIT_XOR_EQ:
+        case TokenType::SHL_EQ:
+        case TokenType::SHR_EQ:
+        case TokenType::USHR_EQ: return InfixBinding{1, 1};     // right-associative
         default:                 return std::nullopt;
     }
 }
@@ -88,7 +94,10 @@ NodePtr makeCompoundAssignExpr(const std::string& name, TokenType op, NodePtr va
 bool isCompoundAssign(TokenType type) {
     return type == TokenType::PLUS_EQ || type == TokenType::MINUS_EQ ||
            type == TokenType::STAR_EQ || type == TokenType::SLASH_EQ ||
-           type == TokenType::PERCENT_EQ;
+           type == TokenType::PERCENT_EQ || type == TokenType::BIT_AND_EQ ||
+           type == TokenType::BIT_OR_EQ || type == TokenType::BIT_XOR_EQ ||
+           type == TokenType::SHL_EQ || type == TokenType::SHR_EQ ||
+           type == TokenType::USHR_EQ;
 }
 
 TokenType compoundOperator(TokenType type) {
@@ -98,6 +107,12 @@ TokenType compoundOperator(TokenType type) {
         case TokenType::STAR_EQ: return TokenType::STAR;
         case TokenType::SLASH_EQ: return TokenType::SLASH;
         case TokenType::PERCENT_EQ: return TokenType::PERCENT;
+        case TokenType::BIT_AND_EQ: return TokenType::BIT_AND;
+        case TokenType::BIT_OR_EQ: return TokenType::BIT_OR;
+        case TokenType::BIT_XOR_EQ: return TokenType::BIT_XOR;
+        case TokenType::SHL_EQ: return TokenType::SHL;
+        case TokenType::SHR_EQ: return TokenType::SHR;
+        case TokenType::USHR_EQ: return TokenType::USHR;
         default: return TokenType::UNKNOWN;
     }
 }
@@ -109,6 +124,12 @@ const char* compoundSpelling(TokenType type) {
         case TokenType::STAR_EQ: return "*=";
         case TokenType::SLASH_EQ: return "/=";
         case TokenType::PERCENT_EQ: return "%=";
+        case TokenType::BIT_AND_EQ: return "&=";
+        case TokenType::BIT_OR_EQ: return "|=";
+        case TokenType::BIT_XOR_EQ: return "^=";
+        case TokenType::SHL_EQ: return "<<=";
+        case TokenType::SHR_EQ: return ">>=";
+        case TokenType::USHR_EQ: return ">>>=";
         default: return "compound assignment";
     }
 }

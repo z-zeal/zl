@@ -52,9 +52,9 @@ This is enforced by the compiler pipeline. Errors are reported in three categori
 `int total = 0`. The annotation-after-colon spelling `var x: int` is a syntax error.
 
 **Compound assignment** is supported on plain variables: `+=`, `-=`, `*=`, `/=`,
-and `%=` use the same arithmetic and type checks as `x = x op value`. Field and
-index targets are rejected for now, so a receiver or index expression is never
-evaluated twice by hidden desugaring.
+`%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`, and `>>>=` use the same operator and type
+checks as `x = x op value`. Field and index targets are rejected for now, so a
+receiver or index expression is never evaluated twice by hidden desugaring.
 
 ```zl
 int count = 10

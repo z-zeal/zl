@@ -116,6 +116,12 @@ namespace zl {
         STAR_EQ,          // *=
         SLASH_EQ,         // /=
         PERCENT_EQ,       // %=
+        BIT_AND_EQ,       // &=
+        BIT_OR_EQ,        // |=
+        BIT_XOR_EQ,       // ^=
+        SHL_EQ,           // <<=
+        SHR_EQ,           // >>=
+        USHR_EQ,          // >>>=
         FAT_ARROW,        // =>  (lambda expression bodies only, e.g. func(x) => x * x)
 
         // Operators - comparison

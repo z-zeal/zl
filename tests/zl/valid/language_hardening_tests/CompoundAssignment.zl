@@ -27,6 +27,17 @@ class CompoundAssignment {
         if (total != 7 || factor != 6) {
             throw new Exception("CompoundAssignment failed: right associativity")
         }
+
+        int bits = 1
+        bits <<= 3
+        bits |= 2
+        bits &= 14
+        bits ^= 3
+        bits >>= 1
+        bits >>>= 1
+        if (bits != 2) {
+            throw new Exception("CompoundAssignment failed: bitwise and shift operators")
+        }
         log("ok")
     }
 }

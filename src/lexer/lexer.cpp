@@ -407,6 +407,7 @@ std::vector<Token> Lexer::tokenize() {
                 break;
             case '^':
                 if (match('^')) tokens.push_back(makeToken(TokenType::POW, "^^", startLine, startCol));
+                else if (match('=')) tokens.push_back(makeToken(TokenType::BIT_XOR_EQ, "^=", startLine, startCol));
                 else tokens.push_back(makeToken(TokenType::BIT_XOR, "^", startLine, startCol));
                 break;
             case '[': tokens.push_back(makeToken(TokenType::LBRACKET, "[", startLine, startCol)); break;
@@ -423,10 +424,12 @@ std::vector<Token> Lexer::tokenize() {
                 break;
             case '&':
                 if (match('&')) tokens.push_back(makeToken(TokenType::AND, "&&", startLine, startCol));
+                else if (match('=')) tokens.push_back(makeToken(TokenType::BIT_AND_EQ, "&=", startLine, startCol));
                 else tokens.push_back(makeToken(TokenType::BIT_AND, "&", startLine, startCol));
                 break;
             case '|':
                 if (match('|')) tokens.push_back(makeToken(TokenType::OR, "||", startLine, startCol));
+                else if (match('=')) tokens.push_back(makeToken(TokenType::BIT_OR_EQ, "|=", startLine, startCol));
                 else tokens.push_back(makeToken(TokenType::BIT_OR, "|", startLine, startCol));
                 break;
             case '~':
@@ -446,14 +449,25 @@ std::vector<Token> Lexer::tokenize() {
                 else tokens.push_back(makeToken(TokenType::NOT, "!", startLine, startCol));
                 break;
             case '<':
-                if (match('<')) tokens.push_back(makeToken(TokenType::SHL, "<<", startLine, startCol));
-                else if (match('=')) tokens.push_back(makeToken(TokenType::LTE, "<=", startLine, startCol));
-                else tokens.push_back(makeToken(TokenType::LT, "<", startLine, startCol));
+                if (match('<')) {
+                    if (match('=')) tokens.push_back(makeToken(TokenType::SHL_EQ, "<<=", startLine, startCol));
+                    else tokens.push_back(makeToken(TokenType::SHL, "<<", startLine, startCol));
+                } else if (match('=')) {
+                    tokens.push_back(makeToken(TokenType::LTE, "<=", startLine, startCol));
+                } else {
+                    tokens.push_back(makeToken(TokenType::LT, "<", startLine, startCol));
+                }
                 break;
             case '>':
                 if (match('>')) {
-                    if (match('>')) tokens.push_back(makeToken(TokenType::USHR, ">>>", startLine, startCol));
-                    else tokens.push_back(makeToken(TokenType::SHR, ">>", startLine, startCol));
+                    if (match('>')) {
+                        if (match('=')) tokens.push_back(makeToken(TokenType::USHR_EQ, ">>>=", startLine, startCol));
+                        else tokens.push_back(makeToken(TokenType::USHR, ">>>", startLine, startCol));
+                    } else if (match('=')) {
+                        tokens.push_back(makeToken(TokenType::SHR_EQ, ">>=", startLine, startCol));
+                    } else {
+                        tokens.push_back(makeToken(TokenType::SHR, ">>", startLine, startCol));
+                    }
                 } else if (match('=')) {
                     tokens.push_back(makeToken(TokenType::GTE, ">=", startLine, startCol));
                 } else {
