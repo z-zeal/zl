@@ -169,6 +169,13 @@ confirmed already fixed on 2026-09-17; see [Done](#done) and
 Most recent first. Kept briefly so the gates that cover each fix are findable,
 then deleted - [docs/changelog.md](docs/changelog.md) is the permanent record.
 
+- [x] **Native frame layouts and conservative safepoint maps** (2026-11-22) -
+  emitted functions expose offsets/reference flags for every frame slot and vreg
+  spill, and a conservative map for each CALL site, keyed by code offset.
+  Reference locations are initialized to null before use. Gates: regressions
+  124/124, examples 52/52, CTest 44/44, native gate PASS; details in
+  [docs/native-gc-map.md](docs/native-gc-map.md).
+
 - [x] **Generic priority queue and LeetCode heap patterns** (2026-11-22) - added
   comparator-driven `PriorityQueue<T>` with O(log n) enqueue/dequeue and O(n)
   heapify; tests cover min/max ordering, empty fallbacks, and record comparators.

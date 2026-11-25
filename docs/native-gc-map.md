@@ -7,9 +7,10 @@ is the first half of P1-6's remaining work, and it is safe for a precise
 reason: **the tier cannot allocate and cannot call the runtime, so no
 collection can run while a native frame is live.**
 
-This document is the plan for the rest: what makes a reference *used* rather
-than carried, what a frame GC map is, and the order to build it in. It argues
-from the code as it is, the way [memory-domains.md](memory-domains.md) does.
+This document records the native root model, the frame metadata and
+conservative call-site maps already exported, and the remaining steps to make
+them live at runtime. It argues from the code as it is, the way
+[memory-domains.md](memory-domains.md) does.
 
 - [The rule the tier already keeps](#the-rule-the-tier-already-keeps)
 - [What a GC map is](#what-a-gc-map-is)
@@ -48,19 +49,18 @@ places in this frame hold a reference the collector must trace?**
 
 Two pieces of information are needed.
 
-1. **The frame map** — which frame offsets hold references at all. The
-   emitter already computes it: `layoutFrame()` assigns every `FrameSlot`
-   (and every vreg's spill slot) a negative offset from `rbp`, and
-   `FrameSlotInfo::isReference` marks the reference ones. Today that layout
-   lives in a local `unordered_map` inside `FunctionEmitter` and is thrown
-   away when the function is emitted.
+1. **The frame map** — which frame offsets can hold references. `layoutFrame()`
+   assigns every `FrameSlot` (marked by `FrameSlotInfo::isReference`) and every
+   vreg spill (marked by `VRegInfo::cls`) a negative offset from `rbp`.
+   `EmittedFunction::frameLocations` exports those IDs, offsets and reference
+   bits with the emitted code.
 
-2. **The liveness** — which of those reference slots are *live* at a given
-   instruction. A slot that is dead holds a stale pointer; tracing it is
-   harmless for correctness (the collector finds a live object or a dangling
-   one that is still allocated) but it pins objects and grows the root set.
-   A slot that is live and *not* reported is a collection bug: the object is
-   reclaimed while the frame still points at it.
+2. **The liveness** — which of those reference locations are *live* at a given
+   instruction. The current conservative maps report every reference location
+   at every call. A dead slot may hold a stale pointer; tracing it is safe for
+   correctness but pins objects and grows the root set. A slot that is live and
+   *not* reported is a collection bug: the object is reclaimed while the frame
+   still points at it.
 
 The safepoints are the instructions where a collection could be requested. In
 this tier that is exactly the call sites (`lirOpcodeIsCall` says so: a call
@@ -81,12 +81,14 @@ references its GC map says are live at the safepoint it is parked at.
 | Reference value class | `include/zl/native/target.hpp` | exists, documented as "must be reported to the collector at any safepoint it is live across" |
 | Slot flagged as a reference | `FrameSlotInfo::isReference` (`include/zl/native/lir.hpp`), set in `newSlot` (`src/native/select.cpp`) | exists, printed as `gc-root` by `printLirFunction` |
 | "A call is the only place a GC map is required today" | `lirOpcodeIsCall` (`include/zl/native/lir.hpp`) | exists |
-| Frame layout | `FunctionEmitter::layoutFrame` (`src/native/emit.cpp`) | exists, not exported |
+| Frame layout | `FunctionEmitter::layoutFrame` (`src/native/emit.cpp`) | exported as `EmittedFunction::frameLocations`, including LIR slots and vreg spills |
+| Conservative call-site maps | `EmittedFunction::safepoints` | exported by CALL opcode byte offset; includes every reference location |
 | Safepoint coordinator | `src/vm/gc_safepoint.cpp` | exists, used by the VM |
 | Driver | `src/native/exec.cpp` | maps and calls the subset; refuses reference signatures |
 
-So the raw material is in place. What is missing is the *map* itself, its
-export from the emitter, and the driver's participation.
+So the raw material and advisory maps are in place. What is still missing is
+making allocation a real safepoint and having the native driver participate
+and publish the reported roots.
 
 ## Phases
 
@@ -103,37 +105,31 @@ argument or call result. Every *use* is still refused.
 round-trip a pointer unchanged; `same` (reference equality) is refused with a
 reason. Before the change, the first three were refused.
 
-### Phase 2 — export the frame map
+### Phase 2 — export the frame map · **landed 2026-11-22**
 
-`EmittedFunction` gains the frame layout as data: for each slot, its offset
-and whether it is a reference; plus the frame size. The emitter already knows
-all of it; today it discards it.
+`EmittedFunction` exports `frameLocations`: every LIR `FrameSlot` and every
+vreg spill has its ID, negative `rbp` displacement, and reference bit, alongside
+the existing total frame size. The emitter also initializes reference-bearing
+locations to null in the prologue; this makes it safe for a conservative map to
+include a spill before its first definition.
 
-**Gate:** a test asserts the offsets the emitter actually uses — read a
-reference slot's offset out of the map and check the emitted `Load`/`Store`
-displacement for that slot matches it. The map and the bytes must agree, and
-the test is the thing that notices if `layoutFrame` changes.
+**Gate:** `testEmittedFrameMap` reads a reference slot's offset from the exported
+layout and verifies the emitted `Load` and `Store` use that exact displacement.
+It also checks the reference bits and frame bounds for every LIR slot and vreg
+spill, and verifies a reference spill offset appears in emitted memory access.
 
-### Phase 3 — compute the GC map at call sites
+### Phase 3 — compute the GC map at call sites · **landed 2026-11-22**
 
-A pass over each `LirFunction`'s CFG computes, for every call instruction,
-the set of reference slots live at that point. Two honest options:
+Each emitted call now has a `SafepointMap`, keyed by the byte offset of the CALL
+opcode. The initial map is deliberately conservative: it reports every
+reference-bearing frame location, including stale values and null-initialized
+spill slots. This is sound but can pin objects; liveness filtering remains a
+future optimization after measurement.
 
-* **conservative** — every reference slot in the frame is reported at every
-  call. Sound, trivial, and it pins everything the function ever held. Right
-  for a first map, and the fallback if liveness is ever in doubt.
-* **liveness** — a standard backward dataflow over the CFG (`Kill`/`Gen` per
-  instruction, seeded by the reference slots each instruction writes and
-  reads). Better roots, more code, and a new class of bug.
-
-Start conservative, and let the measurement (root-set size, collection
-frequency on the corpus) decide whether liveness is worth it.
-
-**Gate:** a unit test over hand-built LIR with a reference slot that is dead
-at one call and live at another; the conservative map reports both, and the
-test pins that the map is a superset of the live set (never a subset). A
-second test asserts the map is keyed by call-site offset, not by call site
-index, so a block reorder cannot silently misroute it.
+**Gate:** `testEmittedFrameMap` compiles a function with two calls and asserts
+that each map points to its own emitted CALL opcode and relocation, and includes
+every reference-bearing location. The reference slot Load/Store displacement
+test ensures the metadata maps to the frame the bytes actually use.
 
 ### Phase 4 — make allocation real, which makes the map mandatory
 
@@ -193,8 +189,8 @@ done-when.
 | Phase | Gate | Harness |
 | --- | --- | --- |
 | 1 | reference carry round-trips; a use is refused | `tests/native_backend_tests.cpp` |
-| 2 | exported offsets match the emitted displacements | `tests/native_backend_tests.cpp` |
-| 3 | map is a superset of live references; keyed by offset | `tests/native_backend_tests.cpp` (LIR built by hand) |
+| 2 | exported offsets match the emitted displacements; all slots and spills are represented | `testEmittedFrameMap` in `tests/native_backend_tests.cpp` |
+| 3 | conservative roots cover all reference locations; two call sites are keyed by opcode offset | `testEmittedFrameMap` in `tests/native_backend_tests.cpp` |
 | 4 | allocation forces collection; the prior object survives | `tests/native_backend_tests.cpp` + a runtime helper |
 | 5 | the driver's participant publishes the roots | same, through `NativeExecutable` |
 | 6 | a named program runs native end-to-end, measured | `tests/native_exec_parity.py`, `research/report.md` |

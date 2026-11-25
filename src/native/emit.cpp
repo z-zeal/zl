@@ -154,6 +154,8 @@ struct FunctionEmitter {
     // why this is the right first tier.
     std::unordered_map<VReg, std::int32_t> vregOffset;
     std::unordered_map<FrameSlot, std::int32_t> slotOffset;
+    std::vector<EmittedFrameLocation> frameLocations;
+    std::vector<SafepointMap> safepoints;
     std::size_t frameSize{0};
 
     std::unordered_map<LirBlockId, std::size_t> blockOffset;
@@ -185,13 +187,20 @@ struct FunctionEmitter {
 
     void layoutFrame() {
         std::int32_t offset = 0;
+        frameLocations.clear();
         for (std::size_t i = 1; i < fn.slots.size(); ++i) {
             offset -= static_cast<std::int32_t>(fn.slots[i].size == 0 ? 8 : fn.slots[i].size);
             slotOffset[fn.slots[i].id] = offset;
+            frameLocations.push_back(EmittedFrameLocation{
+                EmittedFrameLocationKind::FrameSlot, fn.slots[i].id, offset,
+                fn.slots[i].isReference});
         }
         for (std::size_t i = 1; i < fn.vregs.size(); ++i) {
             offset -= 8;
             vregOffset[fn.vregs[i].id] = offset;
+            frameLocations.push_back(EmittedFrameLocation{
+                EmittedFrameLocationKind::VirtualRegister, fn.vregs[i].id, offset,
+                fn.vregs[i].cls == ValueClass::Reference});
         }
         const std::size_t used = static_cast<std::size_t>(-offset);
         // A caller must keep the convention's shadow space at the top of its
@@ -624,9 +633,15 @@ struct FunctionEmitter {
                 if (!loadOperand(ins.operands[i], cls, cc.intArgRegs[intUsed++].id)) return false;
             }
         }
+        const std::size_t callOffset = a.here();
         const std::size_t at = a.callRel32();
         relocations.push_back(EmittedFunction::Relocation{
             at, ins.callee, ins.opcode == LirOpcode::CallRuntime});
+        SafepointMap safepoint;
+        safepoint.callOffset = callOffset;
+        for (const auto& location : frameLocations)
+            if (location.isReference) safepoint.referenceOffsets.push_back(location.offset);
+        safepoints.push_back(std::move(safepoint));
         if (ins.result != kNoVReg) {
             const unsigned reg = ins.resultClass == ValueClass::Float ? cc.floatReturnReg.id
                                                                       : cc.intReturnReg.id;
@@ -641,6 +656,16 @@ struct FunctionEmitter {
         a.pushRbp();
         a.movRbpRsp();
         if (frameSize != 0) a.subRspImm32(static_cast<std::uint32_t>(frameSize));
+
+        // A conservative safepoint map includes every reference-bearing
+        // location, including spill slots whose value is not defined yet.
+        // Initialize those locations to null so a future collector never
+        // interprets uninitialized stack bytes as a managed pointer.
+        for (const auto& location : frameLocations) {
+            if (!location.isReference) continue;
+            a.movRegImm64(scratchI0, 0);
+            a.movMemReg(location.offset, scratchI0);
+        }
 
         // Spill the incoming arguments into their vregs' frame slots. This is
         // the prologue half of the calling convention: after it, no value is
@@ -688,6 +713,8 @@ EmitResult emitModule(const LirModule& module, const TargetMachine& target) {
         out.name = fn.name;
         out.code = std::move(emitter.a.code);
         out.frameSize = emitter.frameSize;
+        out.frameLocations = std::move(emitter.frameLocations);
+        out.safepoints = std::move(emitter.safepoints);
         out.parameterCount = fn.parameters.size();
         out.returnClass = fn.returnClass;
         out.relocations = std::move(emitter.relocations);

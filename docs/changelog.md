@@ -1,5 +1,18 @@
 # Development Checkpoints
 
+## 2026-11-22 - export native frame layouts and conservative safepoint maps
+
+`EmittedFunction` now exposes the target-specific offsets and reference flags
+for every LIR frame slot and vreg spill. Reference-bearing locations are
+initialized to null in the prologue so conservative maps never read
+uninitialized stack contents. Every emitted call carries a safepoint map keyed
+by the CALL opcode's byte offset and listing all reference-bearing locations.
+The native backend regression verifies slot displacements against emitted
+Load/Store bytes and checks two call-site maps against their call opcodes and
+relocations. Regressions 124/124, examples 52/52, CTest 44/44, and native gate
+PASS. This metadata is advisory; the driver still does not publish roots or
+trigger GC from native frames.
+
 ## 2026-11-22 - add a LeetCode-style algorithm harness and priority queue
 
 The `Solution` fixture now covers eight patterns: Two Sum, Binary Search, Maximum
