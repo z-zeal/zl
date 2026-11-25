@@ -1,0 +1,42 @@
+// Regression fixture - valid/language_hardening_tests - ListSort
+// List.sort is stable, in-place, and O(n log n) rather than quadratic.
+data SortTag {
+    rank: int
+    ordinal: int
+}
+
+class ListSort {
+    func main(): void {
+        var descending = new List<int>()
+        for i in 0..4096 {
+            descending.push(4095 - i)
+        }
+        descending.sort(func(int left, int right) => left < right)
+        for i in 0..descending.length() {
+            if (descending.get(i) != i) {
+                throw new Exception("ListSort failed: large ascending order")
+            }
+        }
+
+        var stable = new List<SortTag>()
+        stable.push(SortTag { rank: 1, ordinal: 0 })
+        stable.push(SortTag { rank: 0, ordinal: 1 })
+        stable.push(SortTag { rank: 1, ordinal: 2 })
+        stable.push(SortTag { rank: 0, ordinal: 3 })
+        stable.sort(func(SortTag left, SortTag right) => left.rank < right.rank)
+        if (stable.get(0).ordinal != 1 || stable.get(1).ordinal != 3 ||
+            stable.get(2).ordinal != 0 || stable.get(3).ordinal != 2) {
+            throw new Exception("ListSort failed: stability")
+        }
+
+        var empty = new List<int>()
+        empty.sort(func(int left, int right) => left < right)
+        var singleton = new List<int>()
+        singleton.push(5)
+        singleton.sort(func(int left, int right) => left < right)
+        if (singleton.length() != 1 || singleton.get(0) != 5) {
+            throw new Exception("ListSort failed: empty/singleton bounds")
+        }
+        log("ok")
+    }
+}

@@ -497,18 +497,68 @@ class List<T> {
         return -1
     }
 
-    // Stable insertion sort. The storage boundary remains Collection.get/put.
+    // Stable bottom-up merge sort. It uses O(n) temporary storage and
+    // O(n log n) comparisons; equal items are taken from the left run first.
+    // The original list is only written after all comparisons succeed.
     public func sort(func less): void {
-        var i = 1
-        while (i < this.length()) {
-            var current = this.get(i)
-            var j = i - 1
-            while (j >= 0 && less(current, this.get(j))) {
-                this.put(j + 1, this.get(j))
-                j = j - 1
+        var count = this.length()
+        if (count < 2) { return }
+
+        var source = this.copy()
+        var target = new List<T>()
+        for i in 0..count {
+            target.push(source.get(i))
+        }
+
+        var width = 1
+        while (width < count) {
+            var start = 0
+            while (start < count) {
+                var leftCount = width
+                if (leftCount > count - start) { leftCount = count - start }
+                var middle = start + leftCount
+                var rightCount = width
+                if (rightCount > count - middle) { rightCount = count - middle }
+                var end = middle + rightCount
+
+                var left = start
+                var right = middle
+                var output = start
+                while (left < middle && right < end) {
+                    if (less(source.get(right), source.get(left))) {
+                        target.put(output, source.get(right))
+                        right = right + 1
+                    } else {
+                        target.put(output, source.get(left))
+                        left = left + 1
+                    }
+                    output = output + 1
+                }
+                while (left < middle) {
+                    target.put(output, source.get(left))
+                    left = left + 1
+                    output = output + 1
+                }
+                while (right < end) {
+                    target.put(output, source.get(right))
+                    right = right + 1
+                    output = output + 1
+                }
+                start = end
             }
-            this.put(j + 1, current)
-            i = i + 1
+
+            var previous = source
+            source = target
+            target = previous
+            if (width > count / 2) {
+                width = count
+            } else {
+                width = width * 2
+            }
+        }
+
+        for i in 0..count {
+            this.put(i, source.get(i))
         }
     }
 }

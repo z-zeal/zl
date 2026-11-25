@@ -1,5 +1,26 @@
 # Development Checkpoints
 
+## 2026-11-22 - make List sorting stable and O(n log n)
+
+`List.sort` now uses a bottom-up stable merge sort with O(n) temporary storage,
+so large lists no longer incur quadratic insertion-sort work. Sorting remains
+in-place; equal items retain their original order, and the receiver is not
+rewritten until comparisons have completed. `ListSort.zl` checks a large reverse
+input, stable ordering, and empty/singleton bounds on both compiler paths.
+Regressions 123/123, CTest 44/44, native gate PASS.
+
+## 2026-11-22 - index numeric map keys without changing insertion order
+
+Large maps now build a lazy hash index for numeric keys in addition to the
+existing string-key index. Entries remain stored in insertion order, and hash
+matches are verified with the existing equality rule, including `1 == 1.0` and
+NaN non-equality. Appends update a warm index, removals invalidate it, and map
+ordering and thread-safety guarantees remain unchanged. This makes common
+integer-keyed lookup patterns, such as Two Sum, expected O(1) per lookup rather
+than a linear scan. `IntegerKeyMap.zl` covers the public API on both compiler paths;
+runtime tests pin numeric equality, index mutation, and NaN behavior. Regressions
+122/122, CTest 44/44, and the native gate pass.
+
 ## 2026-11-22 - complete compound arithmetic, bitwise, and shift assignment
 
 Alongside the arithmetic forms (`+=`, `-=`, `*=`, `/=`, `%=`), plain variables

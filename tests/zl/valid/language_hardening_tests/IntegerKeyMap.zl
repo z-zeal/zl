@@ -1,0 +1,27 @@
+// Regression fixture - valid/language_hardening_tests - IntegerKeyMap
+// Large numeric-key maps use the lazy numeric lookup index without changing
+// insertion, update, or removal semantics.
+class IntegerKeyMap {
+    func main(): void {
+        var positions = new Map<int, int>()
+        for i in 0..128 {
+            positions.put(i, i * 10)
+        }
+
+        if (positions.length() != 128 || positions.get(73) != 730) {
+            throw new Exception("IntegerKeyMap failed: indexed lookup")
+        }
+        positions.put(73, 731)
+        if (positions.length() != 128 || positions.get(73) != 731) {
+            throw new Exception("IntegerKeyMap failed: update in place")
+        }
+        if (!positions.removeIfPresent(73) || positions.has(73)) {
+            throw new Exception("IntegerKeyMap failed: indexed removal")
+        }
+        positions.put(73, 732)
+        if (positions.length() != 128 || positions.get(73) != 732) {
+            throw new Exception("IntegerKeyMap failed: reinsert after removal")
+        }
+        log("ok")
+    }
+}

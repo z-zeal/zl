@@ -156,9 +156,9 @@ struct ListBox {
 };
 struct MapBox {
     NativeContainerTypeRef storageType;
-    // A simple association list (linear scan on lookup) rather than a hash
-    // map - this avoids needing a std::hash<Value> specialization, and is
-    // more than fast enough for the sizes a language this young will see.
+    // An insertion-ordered association list with selective hash indexes for
+    // string and numeric keys. Entries remain the source of truth, avoiding
+    // changes to ordering while making common lookup classes scale well.
     //
     // This also gives `map` a real, guaranteed ordering contract for free
     // (see ROADMAP.md's Phase 4 "HashMap/ordered-map distinction"
@@ -178,11 +178,10 @@ struct MapBox {
     // O(n). It is sound because valuesEqual(string, non-string) is always
     // false, so a string lookup key can only ever match string entry keys
     // by exact equality - non-string keys are simply absent from the index
-    // and can never be missed. Non-string lookup keys (ints, objects, ...)
-    // still scan linearly, preserving valuesEqual's cross-numeric
-    // semantics exactly (1 == 1.0). Any structural change (append, erase)
-    // invalidates the cache; an in-place value update does not, because
-    // keys never move.
+    // and can never be missed. Numeric keys use a separate hash index whose
+    // canonical hash preserves int/double equality; other keys still scan
+    // linearly. Any structural change (append, erase) invalidates the caches;
+    // an in-place value update does not, because keys never move.
     // One mutex guards `entries` and the index together, and every
     // operation below holds it across lookup AND use. A map shared across
     // threads (via Shared) may be read and written concurrently; resolving
@@ -200,10 +199,15 @@ struct MapBox {
     mutable std::mutex mutex;
     mutable std::unordered_map<std::string, std::size_t> stringKeyIndex;
     mutable bool stringKeyIndexValid{false};
+    // Numeric equality intentionally crosses int/double representations, so
+    // this index uses the canonical valueHashCode and confirms collisions
+    // with valuesEqual before returning an entry.
+    mutable std::unordered_multimap<std::int64_t, std::size_t> numericKeyIndex;
+    mutable bool numericKeyIndexValid{false};
 
     // Position of the first entry whose key equals `key`, or kNoEntry.
-    // Exact semantics of a linear valuesEqual scan, O(1) for string keys
-    // on maps of 8+ entries. The position is only meaningful while the
+    // Exact semantics of a linear valuesEqual scan, expected O(1) for
+    // string/numeric keys on maps of 8+ entries. The position is only meaningful while the
     // mutex is held, so this is just the single-shot lookup for existence
     // checks; mutation and read-then-use go through the compound ops.
     [[nodiscard]] std::size_t findEntry(const Value& key) const;
@@ -231,17 +235,12 @@ private:
     void invalidateKeyIndexLocked() const {
         stringKeyIndexValid = false;
         stringKeyIndex.clear();
+        numericKeyIndexValid = false;
+        numericKeyIndex.clear();
     }
-    // Record that `key` was just appended at the end of entries (the caller
-    // has already emplaced it). An index that is already valid can absorb a
-    // string key in O(1); a non-string key never enters the index, and an
-    // invalid index is rebuilt on the next lookup anyway.
-    void noteAppendedKeyLocked(const Value& key) const {
-        const auto* appended = std::get_if<std::string>(&key);
-        if (!appended) return;
-        if (!stringKeyIndexValid) return;
-        stringKeyIndex.emplace(*appended, entries.size() - 1);
-    }
+    // Record a newly appended key in any already-built lookup index. An
+    // invalid index is rebuilt lazily on its next lookup.
+    void noteAppendedKeyLocked(const Value& key) const;
 };
 
 // An instance of a user-defined class. `className` identifies the class for
