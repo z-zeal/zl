@@ -1,0 +1,14 @@
+// ============================================================================
+// Regression fixture - invalid/type_errors - PlusAssignNonVariable
+//
+// `+=` desugars to `target = target + value`, which needs the target's name. An
+// element or field target would need its object/index expression duplicated,
+// changing how many times it runs, so it is rejected at parse time.
+// ============================================================================
+
+class PlusAssignNonVariable {
+    func main(): void {
+        var xs = new List<int>()
+        xs[0] += 1
+    }
+}

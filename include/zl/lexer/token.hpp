@@ -111,6 +111,7 @@ namespace zl {
 
         // Operators - assignment
         ASSIGN,           // =
+        PLUS_EQ,          // +=  (sugar for `target = target + value`)
         FAT_ARROW,        // =>  (lambda expression bodies only, e.g. func(x) => x * x)
 
         // Operators - comparison

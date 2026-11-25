@@ -1,0 +1,50 @@
+// ============================================================================
+// Regression fixture - valid/language_hardening_tests - PlusAssignment
+//
+// `x += 1` was a syntax error. It is sugar for `x = x + 1`, so it gets the
+// checker's existing assignment rules for free: the variable must exist, must not
+// be const, and the widened value must still fit its declared type.
+//
+// Only a plain variable name is a target. A field or an element would need its
+// object/index expression duplicated, which would run a getter or index twice,
+// so those are rejected rather than silently doing the wrong thing.
+// ============================================================================
+
+class PlusAssignment {
+    func check(bool cond, string what): void {
+        if (!cond) {
+            throw new Exception("PlusAssignment failed: " + what)
+        }
+    }
+
+    func main(): void {
+        var self = new PlusAssignment()
+
+        int n = 3
+        n += 2
+        self.check(n == 5, "int")
+
+        // The operator is the same one `+` uses, so string concatenation works.
+        string s = "a"
+        s += "b"
+        self.check(s == "ab", "string")
+
+        double d = 1.5
+        d += 2.5
+        self.check(d == 4.0, "double")
+
+        // A compound assignment yields the assigned value, so it can be used in
+        // an expression.
+        self.check((n += 1) == 6, "result value")
+        self.check(n == 6, "assigned after use")
+
+        // Repeated accumulation, the shape this spelling exists for.
+        var total = 0
+        for i in 0..4 {
+            total += i
+        }
+        self.check(total == 6, "loop accumulation")
+
+        log("ok")
+    }
+}

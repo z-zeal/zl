@@ -26,12 +26,12 @@ class Loops {
         var n = 0
         while (n < 3) {
             log("while " + n)
-            n = n + 1
+            n += 1
         }
 
         var k = 0
         repeat {
-            k = k + 1
+            k += 1
         } while (k < 3)
         log("repeat stopped at " + k)
 
@@ -40,7 +40,7 @@ class Loops {
         for i in 0..10 {
             if (i == 2) { continue }
             if (i == 5) { break }
-            sum = sum + i
+            sum += i
         }
         log("sum " + sum)      // 0 + 1 + 3 + 4
 

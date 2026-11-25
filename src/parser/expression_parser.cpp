@@ -45,7 +45,8 @@ std::optional<InfixBinding> infixBinding(TokenType type) {
         case TokenType::SLASH:
         case TokenType::PERCENT: return InfixBinding{100, 101};
         case TokenType::POW:     return InfixBinding{120, 120}; // right-associative
-        case TokenType::ASSIGN:  return InfixBinding{1, 1};     // right-associative
+        case TokenType::ASSIGN:
+        case TokenType::PLUS_EQ: return InfixBinding{1, 1};     // right-associative
         default:                 return std::nullopt;
     }
 }
@@ -56,6 +57,31 @@ bool isUnary(TokenType type) {
     // double, and both backends lower it to nothing at all.
     return type == TokenType::PLUS || type == TokenType::MINUS ||
            type == TokenType::NOT || type == TokenType::BIT_NOT;
+}
+
+// `target += value` becomes `target = target + value`.
+//
+// Only a plain variable name is accepted: the name is a string already, so no AST
+// clone is needed. A field (`x.count += 1`) or an element (`xs[i] += 1`) would
+// need the object/index sub-expression duplicated, and duplicating it changes how
+// many times a getter or index expression runs - so those report a clear error
+// instead of silently doing the wrong thing.
+NodePtr makePlusAssignExpr(const std::string& name, NodePtr value, std::size_t line) {
+    auto identifier = std::make_unique<Identifier>();
+    identifier->name = name;
+    identifier->line = line;
+
+    auto binary = std::make_unique<BinaryExpr>();
+    binary->op = TokenType::PLUS;
+    binary->left = std::move(identifier);
+    binary->right = std::move(value);
+    binary->line = line;
+
+    auto node = std::make_unique<AssignExpr>();
+    node->name = name;
+    node->value = std::move(binary);
+    node->line = line;
+    return node;
 }
 
 // Ternary binds tighter than assignment (`a = c ? b : d` assigns the whole
@@ -192,6 +218,19 @@ NodePtr ExpressionParser::parsePratt(int minBindingPower) {
         }
 
         Token op = parser_.advance();
+
+        // `+=` sits at assignment's level and is right-associative, so it shares
+        // the `=` arm: only a plain variable name can be desugared without
+        // duplicating a sub-expression.
+        if (type == TokenType::PLUS_EQ) {
+            if (left->kind != NodeKind::Identifier) {
+                parser_.error("Left side of '+=' must be a variable name");
+            }
+            std::string name = static_cast<Identifier*>(left.get())->name;
+            NodePtr value = parsePratt(binding->rightBindingPower);
+            left = makePlusAssignExpr(name, std::move(value), op.line);
+            continue;
+        }
 
         if (type == TokenType::ASSIGN) {
             std::string name;

@@ -62,12 +62,15 @@ are in [docs/changelog.md](docs/changelog.md), and two more closed on 2026-11-24
 exponent literals the printer emits but the lexer refused, and `this` in `main`
 failing at run time instead of at the use.
 
-Still open from that list: `for` is range-only, and the ergonomic syntax the
-guide does not promise (`+=`, `++`, `switch`). The literal spellings and the
+Still open from that list: `for` is range-only, `++` (which ZL already spells as
+`x += 1`), and the ergonomic syntax the guide does not promise (`switch`). The
+literal spellings and the
 conditional expression are done - hex, binary, `_` separators, unary `+`, a
 trailing dot and `cond ? then : else` closed the same day as exponent notation.
 A null value now prints `null`, not `nil`: `nil` is the runtime type name but not
 a writable literal, so printing it showed text users could not write back.
+`+=` is sugar for `x = x + y` on a plain variable; field and element targets are
+rejected rather than duplicating a sub-expression.
 
 ---
 

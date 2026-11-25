@@ -1,5 +1,26 @@
 # Development Checkpoints
 
+## 2026-11-24 - compound assignment: `x += y`
+
+`+=` was a syntax error. It is sugar for `x = x + y`, so it inherits the
+checker's existing assignment rules rather than duplicating them: the variable
+must exist, must not be const, and the widened value must still fit its declared
+type (`n += 1.5` on an `int` gives the ordinary `cannot assign double to variable
+'n' of type int`). It binds where `=` does and yields the assigned value, so
+`(n += 1)` can be used in an expression.
+
+**Only a plain variable name is a target.** A field (`x.count += 1`) or an element
+(`xs[i] += 1`) would need its object/index sub-expression duplicated in the
+desugaring, which changes how many times that expression runs - so those are a
+clear parse error instead of silently evaluating twice. Duplicating AST nodes for
+them would need a general expression cloner, which does not exist yet; it is
+cheaper to reject now and widen later than to get the count wrong.
+
+Gates: `tests/zl/valid/language_hardening_tests/PlusAssignment.zl`,
+`tests/zl/invalid/type_errors/PlusAssignNonVariable.zl`,
+`tests/zl/invalid/type_errors/PlusAssignTypeMismatch.zl`; `examples/basics/Loops.zl`
+now uses the spelling.
+
 ## 2026-11-24 - a null value prints as `null`, not `nil`
 
 Found while wiring up the ternary: `log(null)` printed `nil`. `nil` is the name
