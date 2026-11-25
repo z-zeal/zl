@@ -169,6 +169,17 @@ confirmed already fixed on 2026-09-17; see [Done](#done) and
 Most recent first. Kept briefly so the gates that cover each fix are findable,
 then deleted - [docs/changelog.md](docs/changelog.md) is the permanent record.
 
+- [x] **List sort scalability** (2026-11-22) - replaced quadratic stable insertion
+  sort with stable bottom-up merge sort. `ListSort.zl` checks 4,096 reverse-sorted
+  integers, stable ordering for equal keys, and empty/singleton inputs on both
+  compiler paths. Gates: regressions 123/123, CTest 44/44, native gate PASS.
+
+- [x] **Numeric-key map lookup scalability** (2026-11-22) - maps with 8+ entries
+  lazily index numeric keys while preserving insertion order and `1 == 1.0` lookup
+  semantics. Runtime tests cover cross-type lookup/update, append, remove/index
+  invalidation and NaN non-equality; `IntegerKeyMap.zl` covers the public `Map<int,int>`
+  path on both compilers. Gates: regressions 122/122, CTest 44/44, native gate PASS.
+
 - [x] **PF-1 · MIR bytecode is larger and slower than the reference compiler** (2026-09-20) -
   size half closed at the measured numbers: post-P1-9 re-measurement on the same 16
   positive programs, one build ([research/report.md §2.9](research/report.md)) - total

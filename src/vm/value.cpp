@@ -564,6 +564,16 @@ bool valuesEqual(const Value& a, const Value& b) {
     return false;
 }
 
+void MapBox::noteAppendedKeyLocked(const Value& key) const {
+    const std::size_t position = entries.size() - 1;
+    if (const auto* stringKey = std::get_if<std::string>(&key); stringKey && stringKeyIndexValid) {
+        stringKeyIndex.emplace(*stringKey, position);
+    }
+    if (isNumericValue(key) && numericKeyIndexValid) {
+        numericKeyIndex.emplace(valueHashCode(key), position);
+    }
+}
+
 std::size_t MapBox::findEntry(const Value& key) const {
     std::lock_guard<std::mutex> lock(mutex);
     return findEntryLocked(key);
@@ -604,9 +614,32 @@ std::vector<std::pair<Value, Value>> MapBox::snapshotEntries() const {
 }
 
 std::size_t MapBox::findEntryLocked(const Value& key) const {
-    // String keys are the overwhelmingly common case and can never equal a
-    // non-string key (see the comment on stringKeyIndex), so they may use
-    // the hash index once the map is big enough for it to pay for itself.
+    // Numeric equality crosses int/double representations. valueHashCode is
+    // canonical for equal numeric values, but hash collisions (and NaN's
+    // deliberate non-equality) still require valuesEqual confirmation.
+    if (isNumericValue(key) && entries.size() >= 8) {
+        if (!numericKeyIndexValid) {
+            numericKeyIndex.clear();
+            numericKeyIndex.reserve(entries.size());
+            for (std::size_t i = 0; i < entries.size(); ++i) {
+                if (isNumericValue(entries[i].first)) {
+                    numericKeyIndex.emplace(valueHashCode(entries[i].first), i);
+                }
+            }
+            numericKeyIndexValid = true;
+        }
+        const auto [begin, end] = numericKeyIndex.equal_range(valueHashCode(key));
+        for (auto it = begin; it != end; ++it) {
+            if (it->second < entries.size() && valuesEqual(entries[it->second].first, key)) {
+                return it->second;
+            }
+        }
+        return kNoEntry;
+    }
+
+    // String keys can never equal a non-string key (see the comment on
+    // stringKeyIndex), so they may use the hash index once the map is big
+    // enough for it to pay for itself.
     if (const auto* needle = std::get_if<std::string>(&key); needle && entries.size() >= 8) {
         if (!stringKeyIndexValid) {
             stringKeyIndex.clear();

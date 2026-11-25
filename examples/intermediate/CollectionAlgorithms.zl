@@ -8,7 +8,7 @@
 //   transform(f)             map to a NEW list, leaving the original alone
 //   filter(predicate)        new list of the elements that pass
 //   reduce(combine, start)   fold into a single value
-//   sort(less)               stable insertion sort, IN PLACE, returns void
+//   sort(less)               stable O(n log n) merge sort, IN PLACE, returns void
 //   reversed()               a NEW list in the opposite order
 //   any / all                short-circuiting predicates
 //   contains / indexOf / count  membership. Note count(item) counts

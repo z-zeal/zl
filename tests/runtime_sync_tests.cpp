@@ -11,6 +11,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <iostream>
+#include <limits>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
@@ -292,6 +293,32 @@ void testMapBoxState() {
     require(snap.size() == 2, "snapshotEntries is detached from later mutation");
     require(box.removeEntry(Value{std::int64_t{3}}), "removeEntry reports a present key");
     require(!box.removeEntry(Value{std::int64_t{3}}), "removeEntry reports an absent key");
+
+    // Numeric keys use a separate index while preserving valuesEqual's
+    // cross-representation rule: an integral double finds and updates the
+    // matching int key without changing insertion order or growing the map.
+    MapBox numeric;
+    for (std::int64_t i = 0; i < 32; ++i) {
+        numeric.setEntry(Value{i}, Value{i * 10});
+    }
+    auto numericHit = numeric.tryGetEntry(Value{7.0});
+    require(numeric.numericKeyIndexValid, "a large numeric map builds its lookup index");
+    require(numericHit && std::get<std::int64_t>(*numericHit) == 70,
+            "numeric index preserves int/double key equality");
+    numeric.setEntry(Value{7.0}, Value{std::int64_t{77}});
+    require(numeric.size() == 32, "cross-numeric update does not append a duplicate key");
+    auto updatedNumericHit = numeric.tryGetEntry(Value{std::int64_t{7}});
+    require(updatedNumericHit && std::get<std::int64_t>(*updatedNumericHit) == 77,
+            "cross-numeric update is visible through the original key type");
+    numeric.setEntry(Value{std::int64_t{32}}, Value{std::int64_t{320}});
+    auto appendedNumericHit = numeric.tryGetEntry(Value{32.0});
+    require(appendedNumericHit && std::get<std::int64_t>(*appendedNumericHit) == 320,
+            "an active numeric index tracks appended keys");
+    require(numeric.removeEntry(Value{7.0}), "numeric index removes a cross-type key");
+    require(!numeric.numericKeyIndexValid, "removal invalidates the numeric index");
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    numeric.setEntry(Value{nan}, Value{std::int64_t{1}});
+    require(!numeric.tryGetEntry(Value{nan}), "numeric index retains NaN non-equality");
 
     // Enough string keys to engage the hash index, then hammer one MapBox
     // from several threads the way aliased Shared cells do: concurrent
