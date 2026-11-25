@@ -1,15 +1,16 @@
 # The native frame GC map
 
-The native tier can now *carry* a managed reference: a parameter, a local, a
-block parameter, a return value, a call argument or a call result moves a
-reference through native code without the collector ever needing to know. That
-is the first half of P1-6's remaining work, and it is safe for a precise
-reason: **the tier cannot allocate and cannot call the runtime, so no
-collection can run while a native frame is live.**
+The native tier can carry managed references through parameters, locals, call
+arguments and results. Calls now pass through a driver bridge that registers
+each active native frame, polls the safepoint coordinator, and publishes typed
+roots from emitted frame maps. Explicitly bound `CallRuntime` helpers can
+allocate, and a forced-collection regression proves a native-only root keeps
+such an object alive. Language-level object construction and field access remain
+outside the implemented subset.
 
-This document records the native root model, the frame metadata and
-conservative call-site maps already exported, and the remaining steps to make
-them live at runtime. It argues from the code as it is, the way
+This document records the native root model, frame metadata, conservative
+call-site maps, the live runtime bridge, and the remaining steps to make
+language-level objects useful. It argues from the code as it is, the way
 [memory-domains.md](memory-domains.md) does.
 
 - [The rule the tier already keeps](#the-rule-the-tier-already-keeps)
@@ -38,9 +39,11 @@ MIR opcode and the source line — `selectBinary` and `Neg` refuse references
 explicitly, and everything else falls through to the default arm of
 `selectInstruction`.
 
-That boundary is the load-bearing fact for the phases below: a reference the
-tier can carry but not use cannot reach a collector, because nothing it holds
-can trigger one.
+That boundary is the load-bearing fact for the phases below: reference carry
+alone does not create an allocation operation. But explicitly bound runtime
+helpers can allocate, so allocation and native root publication must be
+introduced together; otherwise the next safepoint could reclaim an object still
+held by a native frame.
 
 ## What a GC map is
 
@@ -62,12 +65,14 @@ Two pieces of information are needed.
    *not* reported is a collection bug: the object is reclaimed while the frame
    still points at it.
 
-The safepoints are the instructions where a collection could be requested. In
-this tier that is exactly the call sites (`lirOpcodeIsCall` says so: a call
-is "a safepoint, a clobber of every caller-saved register, and the only place
-a GC map is required today"). If allocation ever enters the tier, every
-allocation point becomes a safepoint too, and a backward edge may need one so
-a long loop can be interrupted.
+Safepoints are instructions where a collection rendezvous can happen. In this
+tier every `Call` and `CallRuntime` is a safepoint (`lirOpcodeIsCall` says a
+call is "a safepoint, a clobber of every caller-saved register, and the only
+place a GC map is required today"). Explicitly bound runtime allocation is
+covered by this protocol: allocation may request collection, and the next
+native call publishes the now-spilled result before rendezvous. If allocation
+is later emitted inline, that instruction must itself become a safepoint; a
+backward edge may also need one so a long loop can be interrupted.
 
 The driver's half is `GCSafepointCoordinator` (`include/zl/vm/gc_safepoint.hpp`):
 a participant publishes a `GCRoots` snapshot when it parks. A native frame
@@ -84,11 +89,13 @@ references its GC map says are live at the safepoint it is parked at.
 | Frame layout | `FunctionEmitter::layoutFrame` (`src/native/emit.cpp`) | exported as `EmittedFunction::frameLocations`, including LIR slots and vreg spills |
 | Conservative call-site maps | `EmittedFunction::safepoints` | exported by CALL opcode byte offset; includes every reference location |
 | Safepoint coordinator | `src/vm/gc_safepoint.cpp` | exists, used by the VM |
-| Driver | `src/native/exec.cpp` | maps and calls the subset; refuses reference signatures |
+| Driver | `src/native/exec.cpp` | registers a participant per call, bridges each emitted call through safepoint polling, resolves raw frame addresses to typed GC roots, and supports typed borrowed reference entry |
 
-So the raw material and advisory maps are in place. What is still missing is
-making allocation a real safepoint and having the native driver participate
-and publish the reported roots.
+The first allocation-and-publication path is live as one bundled milestone.
+The ordering is intentional: runtime allocation is not accepted independently
+of root publication, because each newly allocated reference must survive a
+collection at a later native safepoint. Remaining work is language-level object
+allocation and layout, field operations, and mixed-mode execution.
 
 ## Phases
 
@@ -131,31 +138,26 @@ that each map points to its own emitted CALL opcode and relocation, and includes
 every reference-bearing location. The reference slot Load/Store displacement
 test ensures the metadata maps to the frame the bytes actually use.
 
-### Phase 4 — make allocation real, which makes the map mandatory
+### Phases 4 + 5 — runtime allocation and root publication · **landed 2026-11-22**
 
-The map is advisory until the tier can trigger a collection. The smallest
-honest step is a `CallRuntime` that allocates — a runtime helper taking a
-size and returning a reference — which turns the call site into a real
-safepoint and makes "the tier cannot allocate" false.
+These two phases are one acceptance unit, not independently shippable steps:
+allocation can create a managed pointer before the native frame has returned,
+so a later collection must see that pointer in a published root map. The driver
+binds explicitly supplied `CallRuntime` symbols (unknown runtime symbols still
+fail closed). Emitted `Call` and `CallRuntime` instructions are wrapped by an
+absolute-address enter/leave bridge. `NativeExecutable` registers a coordinator
+participant for the call, tracks the active native frame chain, and polls
+before each target call. When collection is pending, the bridge reads the active
+safepoint maps, resolves non-null raw addresses against the GC's
+managed-allocation registry, and publishes typed `Value` roots. Reference entry
+is available through the borrowed-pointer API; the CLI still refuses to invent
+a managed pointer from `--int64` or `--double` arguments.
 
-**Gate:** a native function that allocates in a loop, run under a driver that
-publishes roots, with a fixture that forces collection pressure and asserts
-the object allocated before the call is still alive after it. Without the
-map, this is the test that fails by construction.
-
-### Phase 5 — the driver publishes roots
-
-`NativeExecutable` registers a safepoint participant for the duration of a
-call and, at each safepoint inside the native frame, publishes the references
-the GC map reports. The driver must also be able to *supply* references,
-which the CLI cannot do: `--run-native` has `--int64` and `--double`, and a
-managed reference cannot be invented from the command line. The backend tests
-can (they already call entries with raw pointers), so the driver's
-participation belongs in the test harness, not the CLI.
-
-**Gate:** the Phase 4 fixture run through the real driver, with the safepoint
-participant registered; a counter in the test's runtime helper asserts the
-collector saw the native frame's roots.
+**Gate:** `testNativeSafepointRootPublication` binds a runtime allocator that
+returns a new object into a native spill, then binds a pressure helper that
+allocates past the GC threshold. The next native call polls and collects while
+the only root to the object is the native frame; the test verifies the object
+survives and is returned unchanged.
 
 ### Phase 6 — objects, fields, and the rest
 
@@ -173,16 +175,18 @@ done-when.
 1. **A map that is a subset of the live set is a use-after-free.** The
    conservative-first ordering exists so that the first map can only
    over-report. Never ship a liveness pass without the superset test.
-2. **The frame map and the bytes drifting apart.** Phase 2's gate exists
-   because `layoutFrame` is the single source of truth and nothing currently
-   checks the consumer reads it.
-3. **Publishing roots the collector cannot use.** `GCRoots` holds `Value`s;
-   a native frame holds a raw pointer. The translation is a `Value` that
-   borrows the object, and its lifetime must be the call, not the frame's.
-4. **Conservative roots pin the whole frame.** Acceptable for correctness, but
-   it can change collection behaviour on the corpus; measure before and after
-   Phase 3, the way [research/report.md](research/report.md) measures
-   everything else.
+2. **The frame map and the bytes drifting apart.** `layoutFrame` is the single
+   source of truth; `testEmittedFrameMap` checks exported offsets against the
+   actual encoded loads and stores.
+3. **Unknown native pointers must not become roots.** Root publication resolves
+   addresses against the GC's live allocation registry and ignores untracked
+   pointers rather than guessing their box type.
+4. **Conservative roots pin the whole frame.** Safe but potentially costly:
+   stale values remain roots until the frame exits. Measure collection
+   frequency and retained-object counts before adding liveness filtering.
+5. **A long call-free native loop delays rendezvous.** The bridge polls at calls;
+   if native loops gain allocation or become long-running, back-edge polls will
+   be needed so another participant's collection cannot wait for function exit.
 
 ## Testing map
 
@@ -191,8 +195,7 @@ done-when.
 | 1 | reference carry round-trips; a use is refused | `tests/native_backend_tests.cpp` |
 | 2 | exported offsets match the emitted displacements; all slots and spills are represented | `testEmittedFrameMap` in `tests/native_backend_tests.cpp` |
 | 3 | conservative roots cover all reference locations; two call sites are keyed by opcode offset | `testEmittedFrameMap` in `tests/native_backend_tests.cpp` |
-| 4 | allocation forces collection; the prior object survives | `tests/native_backend_tests.cpp` + a runtime helper |
-| 5 | the driver's participant publishes the roots | same, through `NativeExecutable` |
+| 4 + 5 | a runtime-allocated object survives forced collection with its only root in native spills | `testNativeSafepointRootPublication` in `tests/native_backend_tests.cpp` |
 | 6 | a named program runs native end-to-end, measured | `tests/native_exec_parity.py`, `research/report.md` |
 
 Every phase also carries the standing gates: `ctest -C Release`, the

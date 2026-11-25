@@ -1069,6 +1069,10 @@ int zlMain(int argc, char** argv) {
             const auto shape = exec.shape(entry, reason);
             using Shape = zl::native::NativeExecutable::Shape;
             if (shape == Shape::kUnsupported) { std::cerr << reason << "\n"; return 4; }
+            if (shape == Shape::kReference) {
+                std::cerr << "run-native: managed references cannot be supplied from the command line\n";
+                return 4;
+            }
             // The first call warms the mapping; the measured loop follows, and
             // the loop total is accumulated exactly like the fixture's VM loop
             // does - same order, same per-operation rounding - so

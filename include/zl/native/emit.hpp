@@ -63,9 +63,11 @@ struct EmittedFunction {
     // paired with the symbol. The caller (a JIT or an object writer) resolves
     // them; the emitter never invents an address.
     struct Relocation {
-        std::size_t offset{0};   // offset of the rel32 field
+        enum class Kind : std::uint8_t { Relative32, Absolute64 };
+        std::size_t offset{0};   // relocation field offset
         std::string symbol;      // callee name
         bool isRuntimeCall{false};
+        Kind kind{Kind::Relative32};
     };
     std::vector<Relocation> relocations;
 };

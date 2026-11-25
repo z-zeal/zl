@@ -99,6 +99,10 @@ public:
     void track(const Value& value);
 
     [[nodiscard]] Collection collect(const GCRoots& roots);
+    // Convert raw native-frame addresses into typed, non-owning GC roots.
+    // Unknown/null values are ignored; the registry lock protects the lookup.
+    [[nodiscard]] std::vector<Value> rootsForNativeAddresses(
+        const std::vector<const void*>& addresses) const;
     [[nodiscard]] std::size_t trackedCount() const;
     [[nodiscard]] bool shouldCollect() const;
 

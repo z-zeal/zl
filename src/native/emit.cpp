@@ -46,6 +46,18 @@ struct Assembler {
         u8(static_cast<std::uint8_t>(0xb8 + (reg & 7)));
         u64(value);
     }
+    std::size_t movRegImm64Patch(unsigned reg, std::uint64_t value) {
+        u8(static_cast<std::uint8_t>(0x48 | ((reg >> 3) & 1)));
+        u8(static_cast<std::uint8_t>(0xb8 + (reg & 7)));
+        const std::size_t at = here();
+        u64(value);
+        return at;
+    }
+    void callReg(unsigned reg) {
+        if (reg >= 8) u8(0x41);
+        u8(0xff);
+        modrmReg(2, reg);
+    }
     void movRegMem(unsigned reg, std::int32_t disp) { rexW(reg, 5); u8(0x8b); modrmRbp(reg, disp); }
     void movMemReg(std::int32_t disp, unsigned reg) { rexW(reg, 5); u8(0x89); modrmRbp(reg, disp); }
     void movRegReg(unsigned dst, unsigned src) { rexW(src, dst); u8(0x89); modrmReg(src, dst); }
@@ -98,6 +110,9 @@ struct Assembler {
             static_cast<std::int64_t>(target) - static_cast<std::int64_t>(at + 4));
         std::memcpy(code.data() + at, &delta, 4);
     }
+    void patchU64(std::size_t at, std::uint64_t value) {
+        std::memcpy(code.data() + at, &value, sizeof(value));
+    }
 
     // --- SSE scalar double -------------------------------------------------
     void sseRex(unsigned reg, unsigned rm, bool wide = false) {
@@ -147,6 +162,7 @@ constexpr std::uint8_t kJA = 0x87;
 struct FunctionEmitter {
     const LirFunction& fn;
     const TargetMachine& target;
+    std::size_t functionIndex{0};
     Assembler a;
     std::string error;
 
@@ -166,8 +182,9 @@ struct FunctionEmitter {
     unsigned scratchI0{0}, scratchI1{1}, scratchI2{2};
     unsigned scratchF0{8}, scratchF1{9};
 
-    FunctionEmitter(const LirFunction& function, const TargetMachine& machine)
-        : fn(function), target(machine) {
+    FunctionEmitter(const LirFunction& function, const TargetMachine& machine,
+                    std::size_t emittedFunctionIndex)
+        : fn(function), target(machine), functionIndex(emittedFunctionIndex) {
         const auto& cc = target.cc;
         if (cc.intScratch.size() >= 3) {
             scratchI0 = cc.intScratch[0].id;
@@ -619,10 +636,25 @@ struct FunctionEmitter {
 
     bool emitCall(const LirInstruction& ins) {
         const auto& cc = target.cc;
+        if (cc.intArgRegs.size() < 3) return fail("safepoint bridge requires three integer argument registers");
+
+        // Register this suspended native frame before the target call. The
+        // bridge may rendezvous with the collector; the active record remains
+        // on the per-thread chain until after the target returns.
+        a.movRegReg(cc.intArgRegs[0].id, 5); // rbp
+        a.movRegImm64(cc.intArgRegs[1].id, functionIndex);
+        const std::size_t callOffsetPatch = a.movRegImm64Patch(cc.intArgRegs[2].id, 0);
+        const std::size_t enterAddress = a.movRegImm64Patch(11, 0);
+        relocations.push_back(EmittedFunction::Relocation{
+            enterAddress, "__zl_native_safepoint_enter", true,
+            EmittedFunction::Relocation::Kind::Absolute64});
+        a.callReg(11);
+
         std::size_t intUsed = 0, floatUsed = 0;
         // Arguments come out of frame slots, so there is no clobber hazard
         // between them: each load writes exactly one argument register and
-        // reads only memory.
+        // reads only memory. Load them after the bridge, which clobbers caller
+        // saved registers.
         for (std::size_t i = 0; i < ins.operands.size(); ++i) {
             const ValueClass cls = i < ins.argClasses.size() ? ins.argClasses[i] : ValueClass::Integer;
             if (cls == ValueClass::Float) {
@@ -633,20 +665,37 @@ struct FunctionEmitter {
                 if (!loadOperand(ins.operands[i], cls, cc.intArgRegs[intUsed++].id)) return false;
             }
         }
+
         const std::size_t callOffset = a.here();
-        const std::size_t at = a.callRel32();
-        relocations.push_back(EmittedFunction::Relocation{
-            at, ins.callee, ins.opcode == LirOpcode::CallRuntime});
+        a.patchU64(callOffsetPatch, callOffset);
+        if (ins.opcode == LirOpcode::CallRuntime) {
+            const std::size_t address = a.movRegImm64Patch(11, 0);
+            relocations.push_back(EmittedFunction::Relocation{
+                address, ins.callee, true, EmittedFunction::Relocation::Kind::Absolute64});
+            a.callReg(11);
+        } else {
+            const std::size_t at = a.callRel32();
+            relocations.push_back(EmittedFunction::Relocation{
+                at, ins.callee, false, EmittedFunction::Relocation::Kind::Relative32});
+        }
         SafepointMap safepoint;
         safepoint.callOffset = callOffset;
         for (const auto& location : frameLocations)
             if (location.isReference) safepoint.referenceOffsets.push_back(location.offset);
         safepoints.push_back(std::move(safepoint));
+
         if (ins.result != kNoVReg) {
             const unsigned reg = ins.resultClass == ValueClass::Float ? cc.floatReturnReg.id
                                                                       : cc.intReturnReg.id;
             storeResult(ins.result, ins.resultClass, reg);
         }
+
+        // The result is safely spilled before the bridge clobbers return regs.
+        const std::size_t leaveAddress = a.movRegImm64Patch(11, 0);
+        relocations.push_back(EmittedFunction::Relocation{
+            leaveAddress, "__zl_native_safepoint_leave", true,
+            EmittedFunction::Relocation::Kind::Absolute64});
+        a.callReg(11);
         return true;
     }
 
@@ -702,8 +751,9 @@ EmitResult emitModule(const LirModule& module, const TargetMachine& target) {
         return result;
     }
 
-    for (const auto& fn : module.functions) {
-        FunctionEmitter emitter(fn, target);
+    for (std::size_t functionIndex = 0; functionIndex < module.functions.size(); ++functionIndex) {
+        const auto& fn = module.functions[functionIndex];
+        FunctionEmitter emitter(fn, target, functionIndex);
         if (!emitter.emit()) {
             result.error = emitter.error;
             result.functions.clear();

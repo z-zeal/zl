@@ -90,6 +90,7 @@ set(SOURCES
     ${CMAKE_SOURCE_DIR}/src/vm/execution_state.cpp
     ${CMAKE_SOURCE_DIR}/src/vm/gc.cpp
     ${CMAKE_SOURCE_DIR}/src/vm/gc_safepoint.cpp
+    ${CMAKE_SOURCE_DIR}/src/vm/native_gc_bridge.cpp
     ${CMAKE_SOURCE_DIR}/src/vm/native.cpp
     ${CMAKE_SOURCE_DIR}/src/vm/native_boundary.cpp
     ${CMAKE_SOURCE_DIR}/src/vm/native_library.cpp

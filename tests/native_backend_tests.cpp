@@ -17,7 +17,9 @@
 #include "zl/mir/verifier.hpp"
 #include "zl/compiler/module_loader.hpp"
 #include "zl/compiler/type_checker.hpp"
+#include "zl/native/exec.hpp"
 #include "zl/native/pipeline.hpp"
+#include "zl/vm/gc.hpp"
 
 #include <cmath>
 #include <cstddef>
@@ -72,6 +74,7 @@ void require(bool condition, const std::string& message) {
     ++failures;
 }
 
+using namespace zl;
 using namespace zl::mir;
 using namespace zl::native;
 
@@ -102,11 +105,23 @@ public:
         offset = 0;
         for (const auto& fn : functions) {
             for (const auto& reloc : fn.relocations) {
-                std::uint8_t* target = entry(reloc.symbol);
-                if (target == nullptr) { ok_ = false; continue; }
+                std::uintptr_t targetAddress = reinterpret_cast<std::uintptr_t>(entry(reloc.symbol));
+                if (targetAddress == 0 && reloc.symbol == "__zl_native_safepoint_enter")
+                    targetAddress = detail::safepointEnterAddress();
+                if (targetAddress == 0 && reloc.symbol == "__zl_native_safepoint_leave")
+                    targetAddress = detail::safepointLeaveAddress();
+                if (targetAddress == 0) { ok_ = false; continue; }
                 std::uint8_t* site = base_ + offset + reloc.offset;
-                const std::int32_t delta = static_cast<std::int32_t>(target - (site + 4));
-                std::memcpy(site, &delta, 4);
+                if (reloc.kind == EmittedFunction::Relocation::Kind::Absolute64) {
+                    const std::uint64_t address = targetAddress;
+                    std::memcpy(site, &address, sizeof(address));
+                } else {
+                    const auto distance = static_cast<std::int64_t>(targetAddress) -
+                        static_cast<std::int64_t>(reinterpret_cast<std::uintptr_t>(site) + 4);
+                    if (distance < INT32_MIN || distance > INT32_MAX) { ok_ = false; continue; }
+                    const std::int32_t delta = static_cast<std::int32_t>(distance);
+                    std::memcpy(site, &delta, sizeof(delta));
+                }
             }
             offset += (fn.code.size() + 4095) / 4096 * 4096;
         }
@@ -885,6 +900,130 @@ void testArithmeticTraps() {
     requireTrap(trapOrExitCode([=] { (void)tfneg(std::numeric_limits<double>::infinity()); }),
                 "negating a non-finite input traps - no non-finite value may exist in the tier");
 }
+
+extern "C" void* nativeGcAllocate() {
+    ObjectRef value = makeGCObject();
+    value->className = "native-frame-root-survived";
+    return value.get();
+}
+
+extern "C" void nativeGcPressure() {
+    auto& gc = TracingGC::instance();
+    const std::size_t allocations = gc.counters().threshold + 1;
+    for (std::size_t i = 0; i < allocations; ++i) (void)makeGCObject();
+}
+
+LirFunction nativeReferenceIdentity() {
+    const auto& arg = x64SysVTarget().cc.intArgRegs[0];
+    LirFunction fn;
+    fn.name = "nativeIdentity";
+    fn.parameters = {1};
+    fn.parameterClasses = {ValueClass::Reference};
+    fn.returnClass = ValueClass::Reference;
+    fn.vregs.push_back(VRegInfo{});
+    VRegInfo parameter;
+    parameter.id = 1;
+    parameter.cls = ValueClass::Reference;
+    parameter.name = "value";
+    parameter.fixed = arg;
+    fn.vregs.push_back(parameter);
+    LirBlock entry;
+    entry.id = 1;
+    entry.label = "entry";
+    LirInstruction ret;
+    ret.opcode = LirOpcode::Return;
+    ret.operands = {LirOperand::reg(1)};
+    entry.instructions.push_back(ret);
+    fn.blocks.push_back(entry);
+    fn.entry = 1;
+    return fn;
+}
+
+LirModule nativeGcRootProbeModule() {
+    LirFunction wrapper;
+    wrapper.name = "nativeRootProbe";
+    wrapper.returnClass = ValueClass::Reference;
+    wrapper.vregs.push_back(VRegInfo{});
+    VRegInfo allocated;
+    allocated.id = 1;
+    allocated.cls = ValueClass::Reference;
+    allocated.name = "allocated";
+    wrapper.vregs.push_back(allocated);
+    VRegInfo result;
+    result.id = 2;
+    result.cls = ValueClass::Reference;
+    result.name = "identityResult";
+    wrapper.vregs.push_back(result);
+
+    LirBlock entry;
+    entry.id = 1;
+    entry.label = "entry";
+    LirInstruction allocate;
+    allocate.opcode = LirOpcode::CallRuntime;
+    allocate.result = 1;
+    allocate.resultClass = ValueClass::Reference;
+    allocate.callee = "test.gc.allocate";
+    entry.instructions.push_back(allocate);
+    LirInstruction pressure;
+    pressure.opcode = LirOpcode::CallRuntime;
+    pressure.callee = "test.gc.pressure";
+    entry.instructions.push_back(pressure);
+    LirInstruction call;
+    call.opcode = LirOpcode::Call;
+    call.result = 2;
+    call.resultClass = ValueClass::Reference;
+    call.operands = {LirOperand::reg(1)};
+    call.argClasses = {ValueClass::Reference};
+    call.callee = "nativeIdentity";
+    entry.instructions.push_back(call);
+    LirInstruction ret;
+    ret.opcode = LirOpcode::Return;
+    ret.operands = {LirOperand::reg(2)};
+    entry.instructions.push_back(ret);
+    wrapper.blocks.push_back(entry);
+    wrapper.entry = 1;
+
+    LirModule module;
+    module.name = "native-gc-root-probe";
+    module.functions.push_back(std::move(wrapper));
+    module.functions.push_back(nativeReferenceIdentity());
+    return module;
+}
+
+void testNativeSafepointRootPublication() {
+    LirModule module = nativeGcRootProbeModule();
+    const auto emitted = emitModule(module, x64SysVTarget());
+    require(emitted.success, "GC root probe emits: " + emitted.error);
+    if (!emitted.success) return;
+
+    NativeRuntimeBindings bindings;
+    bindings["test.gc.allocate"] = reinterpret_cast<std::uintptr_t>(&nativeGcAllocate);
+    bindings["test.gc.pressure"] = reinterpret_cast<std::uintptr_t>(&nativeGcPressure);
+    NativeExecutable executable(emitted.functions, module, bindings);
+    require(executable.ok(), "GC root probe maps and binds: " + executable.error());
+    if (!executable.ok()) return;
+
+    std::string error;
+    const std::size_t entry = executable.resolve("nativeRootProbe", error);
+    require(entry != NativeExecutable::kNoEntry, "GC root probe entry resolves: " + error);
+    if (entry == NativeExecutable::kNoEntry) return;
+
+    auto& gc = TracingGC::instance();
+    const auto before = gc.counters();
+    std::uintptr_t returned = 0;
+    const bool called = executable.callReference(entry, {}, returned, error);
+    const auto after = gc.counters();
+    require(called, "native reference call and collection succeed: " + error);
+    require(returned != 0, "native runtime allocator returns a managed object");
+    require(after.collections > before.collections,
+            "allocation pressure causes a collection at the next native call site");
+    ObjectRef keepAlive(reinterpret_cast<ObjectBox*>(returned));
+    require(keepAlive->className == "native-frame-root-survived",
+            "the collector preserved a runtime-allocated object rooted only in the native frame map");
+
+    auto cleanup = gc.collect(GCRoots{});
+    cleanup.reclaim();
+}
 #endif
 
 // The exported frame layout must agree with the displacement encoded for
@@ -1085,6 +1224,7 @@ int main() {
     // call has to be guarded too: unguarded, a platform without executable
     // memory (macOS) failed to build with "use of undeclared identifier".
     testReferencePassThrough();
+    testNativeSafepointRootPublication();
 #endif
     testUnverifiedMirIsRefused();
     testNoEncoderIsSelectOnly();
