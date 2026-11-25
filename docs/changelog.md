@@ -1,5 +1,20 @@
 # Development Checkpoints
 
+## 2026-11-24 - a double range bound works on MIR too
+
+`for i in 0..5.0` (and a fractional `step`) is a double range: the checker
+computes the loop type from start/end/step, so the loop variable is a `double`
+and the reference backend happily runs `0, 1, 2, 3, 4`. MIR lowering hardcoded
+`int` for the generated counter, end and step slots, so the double stores failed
+verification and the program was rejected with
+`store of double into slot ... of type int`.
+
+The checker now records its decision on the node (`ForStmt::isDoubleRange`) and
+lowering types every generated operand with it. An integer range is unchanged.
+
+Gates: `tests/zl/valid/language_hardening_tests/DoubleRangeLoop.zl`; examples
+52/52, regressions 115/115, ctest 44/44, native gate PASS.
+
 ## 2026-11-24 - `break`/`continue` outside a loop is an error
 
 Both keywords were silently accepted anywhere. The reference backend just fell

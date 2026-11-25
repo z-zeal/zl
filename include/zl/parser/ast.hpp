@@ -405,6 +405,11 @@ struct ForStmt : AstNode {
     NodePtr end;
     NodePtr step;      // never null - parser fills in a literal 1 if 'step' was omitted
     NodePtr body;       // a BlockStmt
+    // The numeric type of the counter and the bounds: INT unless any of
+    // start/end/step is DOUBLE. The checker decides this (it binds the loop
+    // variable to exactly this type), and lowering needs it to type the
+    // generated slots instead of hardcoding int.
+    mutable bool isDoubleRange{false};
     ForStmt() : AstNode(NodeKind::ForStmt) {}
 };
 

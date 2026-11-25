@@ -72,7 +72,9 @@ a writable literal, so printing it showed text users could not write back.
 `+=` is sugar for `x = x + y` on a plain variable; field and element targets are
 rejected rather than duplicating a sub-expression. `break`/`continue` outside a
 loop is now an error instead of silently falling through (it used to run on both
-backends), tracked by a loop depth that resets per func/lambda body.
+backends), tracked by a loop depth that resets per func/lambda body. A double
+range bound (`for i in 0..5.0`) is no longer rejected by MIR verification: the
+checker records the loop's numeric type and lowering uses it for its slots.
 
 ---
 

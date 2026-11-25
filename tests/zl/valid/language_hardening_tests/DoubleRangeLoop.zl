@@ -1,0 +1,46 @@
+// ============================================================================
+// Regression fixture - valid/language_hardening_tests - DoubleRangeLoop
+//
+// `for i in 0..5.0` is a double range: the checker computes the loop type from
+// start/end/step, so a double bound means the loop variable is a double. MIR
+// lowering hardcoded `int` for the generated counter/bound/step slots, so the
+// double stores failed verification and a program the reference backend ran fine
+// was rejected. The lowering now uses the type the checker decided.
+// ============================================================================
+
+class DoubleRangeLoop {
+    func check(bool cond, string what): void {
+        if (!cond) {
+            throw new Exception("DoubleRangeLoop failed: " + what)
+        }
+    }
+
+    func main(): void {
+        var self = new DoubleRangeLoop()
+
+        // A double end bound: the loop runs 0, 1, 2, 3, 4.
+        var count = 0
+        for i in 0..5.0 {
+            self.check(i == count, "double bound iteration")
+            count += 1
+        }
+        self.check(count == 5, "double bound count")
+
+        // A fractional step is the shape this matters for most.
+        var last = -1.0
+        var seen = 0
+        for v in 0..2.0 step 0.5 {
+            last = v
+            seen += 1
+        }
+        self.check(seen == 4, "fractional step count")
+        self.check(last == 1.5, "fractional step last value")
+
+        // An integer range must still be an int loop variable.
+        for k in 0..2 {
+            self.check(k == 0 || k == 1, "integer range")
+        }
+
+        log("ok")
+    }
+}

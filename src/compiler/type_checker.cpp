@@ -3559,6 +3559,7 @@ void TypeChecker::checkForStmt(const ForStmt* node) {
     }
     ZlType loopType = (startType == ZlType::DOUBLE || endType == ZlType::DOUBLE ||
                        stepType == ZlType::DOUBLE) ? ZlType::DOUBLE : ZlType::INT;
+    node->isDoubleRange = (loopType == ZlType::DOUBLE);
     symbols_.pushScope();
     node->storageName = symbols_.defineVar(node->varName, loopType, /*isConst=*/false).storageName;
 

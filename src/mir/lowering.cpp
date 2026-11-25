@@ -1891,13 +1891,18 @@ struct FunctionLowerer {
         if (step.isNone()) return;
 
         const TypeArena& arena = ctx.builder.types();
-        const SlotId counter = defineSlot(node.storageName, node.varName, arena.intType(), true,
+        // The loop's own numeric type, decided by the checker (it binds the loop
+        // variable to exactly this). Hardcoding int made a `for i in 0..5.0`
+        // range - which the checker accepts and the reference backend runs -
+        // fail MIR verification on the double stores.
+        const TypeId loopType = node.isDoubleRange ? arena.doubleType() : arena.intType();
+        const SlotId counter = defineSlot(node.storageName, node.varName, loopType, true,
                                           zl::OwnershipKind::GC, &node);
-        const SlotId endSlot = fb.addSlot("__for_end", arena.intType(), true, zl::OwnershipKind::GC, {}, loc);
-        const SlotId stepSlot = fb.addSlot("__for_step", arena.intType(), true, zl::OwnershipKind::GC, {}, loc);
-        fb.emitStore(counter, coerce(start, arena.intType(), loc), loc);
-        fb.emitStore(endSlot, coerce(end, arena.intType(), loc), loc);
-        fb.emitStore(stepSlot, coerce(step, arena.intType(), loc), loc);
+        const SlotId endSlot = fb.addSlot("__for_end", loopType, true, zl::OwnershipKind::GC, {}, loc);
+        const SlotId stepSlot = fb.addSlot("__for_step", loopType, true, zl::OwnershipKind::GC, {}, loc);
+        fb.emitStore(counter, coerce(start, loopType, loc), loc);
+        fb.emitStore(endSlot, coerce(end, loopType, loc), loc);
+        fb.emitStore(stepSlot, coerce(step, loopType, loc), loc);
         if (failed) return;
 
         const BlockId conditionBlock = newBlock(const_cast<zl::ForStmt*>(&node));
@@ -1907,9 +1912,9 @@ struct FunctionLowerer {
 
         fb.emitJump(conditionBlock, loc);
         gotoBlock(conditionBlock);
-        const Operand current = Operand::temp(fb.emitLoad(counter, loc), arena.intType());
-        const Operand endValue = Operand::temp(fb.emitLoad(endSlot, loc), arena.intType());
-        const Operand stepValue = Operand::temp(fb.emitLoad(stepSlot, loc), arena.intType());
+        const Operand current = Operand::temp(fb.emitLoad(counter, loc), loopType);
+        const Operand endValue = Operand::temp(fb.emitLoad(endSlot, loc), loopType);
+        const Operand stepValue = Operand::temp(fb.emitLoad(stepSlot, loc), loopType);
         // Direction is a runtime property of the step in ZL, and a zero step is
         // an error rather than an infinite loop. One instruction carries both.
         const Operand keepGoing = Operand::temp(fb.emitRangeInBounds(current, endValue, stepValue, loc),
@@ -1923,7 +1928,7 @@ struct FunctionLowerer {
         if (!isDead()) fb.emitJump(stepBlock, loc);
 
         gotoBlock(stepBlock);
-        const Operand counterValue = Operand::temp(fb.emitLoad(counter, loc), arena.intType());
+        const Operand counterValue = Operand::temp(fb.emitLoad(counter, loc), loopType);
         // Reload the step here rather than reusing the condition block's
         // `stepValue` temp: the latch is not always dominated by the
         // condition block. When the loop body can only exit through an
@@ -1932,9 +1937,9 @@ struct FunctionLowerer {
         // defined in the condition block does not dominate its use in the
         // latch, and temporaries do not flow across unwind edges. The
         // counter above already reloads for the same reason.
-        const Operand stepReload = Operand::temp(fb.emitLoad(stepSlot, loc), arena.intType());
+        const Operand stepReload = Operand::temp(fb.emitLoad(stepSlot, loc), loopType);
         const Operand advanced = Operand::temp(fb.emitBinary(Opcode::Add, counterValue, stepReload,
-                                                             arena.intType(), loc), arena.intType());
+                                                             loopType, loc), loopType);
         fb.emitStore(counter, advanced, loc);
         fb.emitJump(conditionBlock, loc);
         gotoBlock(exitBlock);
