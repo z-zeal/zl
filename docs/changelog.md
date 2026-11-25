@@ -1,5 +1,18 @@
 # Development Checkpoints
 
+## 2026-11-22 - publish native frame roots across runtime allocations
+
+`NativeExecutable` now registers a safepoint participant for each active call.
+The emitter wraps direct and explicitly bound runtime calls with enter/leave
+bridges; at a pending collection, the bridge reads each active native frame's
+call-site map, resolves raw addresses against the managed allocation registry,
+and publishes typed roots to the existing coordinator. The driver supports a
+borrowed all-reference entry for internal integrations, while `--run-native`
+still accepts only scalar arguments. A forced-pressure regression allocates an
+object in a runtime helper and verifies it survives collection with its only
+root in a native spill. Language-level object layout and field access remain
+unimplemented.
+
 ## 2026-11-22 - export native frame layouts and conservative safepoint maps
 
 `EmittedFunction` now exposes the target-specific offsets and reference flags
@@ -10,8 +23,8 @@ by the CALL opcode's byte offset and listing all reference-bearing locations.
 The native backend regression verifies slot displacements against emitted
 Load/Store bytes and checks two call-site maps against their call opcodes and
 relocations. Regressions 124/124, examples 52/52, CTest 44/44, and native gate
-PASS. This metadata is advisory; the driver still does not publish roots or
-trigger GC from native frames.
+PASS. The following bundled milestone connects this metadata to runtime root
+publication and forced collection.
 
 ## 2026-11-22 - add a LeetCode-style algorithm harness and priority queue
 
@@ -361,9 +374,9 @@ PASS, and the same 97 with `ZL_MIR_OPT_CHECK=1` (optimiser differential) and
 with `ZL_BACKEND=native`. All 52 examples also produce byte-identical stdout on
 the reference `ZL_COMPILER=ast` path.
 
-## 2026-11-22 - P1-6, reference half begins: a managed reference can be carried, not used
+## 2026-11-22 - P1-6, initial carry-only checkpoint (superseded by the bundled GC milestone above)
 
-The native tier refused every `Reference` outright - `requireScalar` in
+At this initial checkpoint the native tier refused every `Reference` outright - `requireScalar` in
 `src/native/select.cpp` turned a reference parameter, local or return value
 into a per-function refusal ("the native tier has no GC map yet"). That was the
 right call when a reference could not be traced at all, and it is now too
@@ -379,11 +392,11 @@ already moved a non-float class through the integer path, so no byte changed;
 `FrameSlotInfo::isReference` now marks a slot that exists for the frame map
 rather than one that can never be created.
 
-The driver still refuses a signature that carries a reference, for a different
-reason than selection did: `--run-native` can pass `--int64` and `--double`, and
-a managed reference cannot be invented from a command line. Growing that -
-exporting the frame map, computing the GC map at call sites, making allocation
-real, publishing roots - is planned with gates in
+At that checkpoint, the driver refused a signature that carried a reference,
+for a different reason than selection did: `--run-native` could pass `--int64`
+and `--double`, and a managed reference could not be invented from a command
+line. The subsequent map export and bundled allocation/root-publication bridge
+are recorded in the newer entries above and in
 [docs/native-gc-map.md](../docs/native-gc-map.md).
 
 Gates: `testReferencePassThrough` in `tests/native_backend_tests.cpp` -

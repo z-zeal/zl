@@ -297,6 +297,47 @@ void TracingGC::track(const Value& value) {
     }, value);
 }
 
+std::vector<Value> TracingGC::rootsForNativeAddresses(
+    const std::vector<const void*>& addresses) const {
+    std::vector<Value> roots;
+    if (addresses.empty()) return roots;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::unordered_map<const void*, Entry::Kind> liveByPointer;
+    liveByPointer.reserve(entries_.size());
+    for (const auto& entry : entries_) {
+        const void* pointer = nullptr;
+        switch (entry.kind) {
+            case Entry::Kind::List: pointer = entry.list.get(); break;
+            case Entry::Kind::Map: pointer = entry.map.get(); break;
+            case Entry::Kind::Object: pointer = entry.object.get(); break;
+            case Entry::Kind::Closure: pointer = entry.closure.get(); break;
+        }
+        liveByPointer.emplace(pointer, entry.kind);
+    }
+
+    roots.reserve(addresses.size());
+    for (const void* address : addresses) {
+        const auto found = liveByPointer.find(address);
+        if (found == liveByPointer.end()) continue;
+        switch (found->second) {
+            case Entry::Kind::List:
+                roots.emplace_back(ListRef(static_cast<ListBox*>(const_cast<void*>(address))));
+                break;
+            case Entry::Kind::Map:
+                roots.emplace_back(MapRef(static_cast<MapBox*>(const_cast<void*>(address))));
+                break;
+            case Entry::Kind::Object:
+                roots.emplace_back(ObjectRef(static_cast<ObjectBox*>(const_cast<void*>(address))));
+                break;
+            case Entry::Kind::Closure:
+                roots.emplace_back(ClosureRef(static_cast<ClosureBox*>(const_cast<void*>(address))));
+                break;
+        }
+    }
+    return roots;
+}
+
 TracingGC::Collection TracingGC::collect(const GCRoots& roots) {
     // The coordinator must stop all mutators before entering this method.
     // Serializing collectors alone does not make tracing concurrent-safe.

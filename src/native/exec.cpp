@@ -1,6 +1,9 @@
 #include "zl/native/exec.hpp"
 
 #include <cstring>
+#include <limits>
+#include <stdexcept>
+#include <utility>
 
 #if defined(__unix__) && !defined(__APPLE__) && defined(__x86_64__)
 #include <sys/mman.h>
@@ -20,6 +23,17 @@ using EntryFn = std::int64_t (*)(std::int64_t, std::int64_t, std::int64_t,
 
 // The all-double counterpart: six XMM argument registers, result in xmm0.
 using DoubleFn = double (*)(double, double, double, double, double, double);
+using ReferenceFn = void* (*)(void*, void*, void*, void*, void*, void*);
+
+class NativeGcSessionGuard {
+public:
+    explicit NativeGcSessionGuard(NativeGcSession* session) : session_(session) {}
+    ~NativeGcSessionGuard() { if (session_ != nullptr) endNativeGcSession(session_); }
+    NativeGcSessionGuard(const NativeGcSessionGuard&) = delete;
+    NativeGcSessionGuard& operator=(const NativeGcSessionGuard&) = delete;
+private:
+    NativeGcSession* session_;
+};
 
 std::string describeClass(ValueClass cls) {
     switch (cls) {
@@ -34,10 +48,13 @@ std::size_t alignUp(std::size_t v) { return (v + 4095) / 4096 * 4096; }
 
 } // namespace
 
-NativeExecutable::NativeExecutable(const std::vector<EmittedFunction>& functions, const LirModule& lir) {
+NativeExecutable::NativeExecutable(const std::vector<EmittedFunction>& functions,
+                                   const LirModule& lir,
+                                   const NativeRuntimeBindings& runtimeBindings) {
 #if !defined(ZL_NATIVE_EXEC_POSIX_MMAP)
     (void)functions;
     (void)lir;
+    (void)runtimeBindings;
     error_ = "native execution driver: unsupported platform (needs x86-64 Linux with mmap)";
     return;
 #else
@@ -60,6 +77,7 @@ NativeExecutable::NativeExecutable(const std::vector<EmittedFunction>& functions
         names_.push_back(fn.name);
         parameterClasses_.push_back(sig->parameterClasses);
         returnClasses_.push_back(fn.returnClass);
+        frameMetadata_.push_back(FrameMetadata{fn.frameLocations, fn.safepoints});
     }
 
     // One page-sized run per function keeps every entry point page-aligned and
@@ -89,7 +107,11 @@ NativeExecutable::NativeExecutable(const std::vector<EmittedFunction>& functions
         entries_.push_back(reinterpret_cast<std::uintptr_t>(bytes + offsets[i]));
     }
 
-    // Bind direct calls; refuse the module if any site cannot be bound.
+    // Bind direct calls and the internal safepoint bridge. External runtime
+    // symbols are opt-in; an unknown one still refuses the whole executable.
+    NativeRuntimeBindings runtime = runtimeBindings;
+    runtime["__zl_native_safepoint_enter"] = detail::safepointEnterAddress();
+    runtime["__zl_native_safepoint_leave"] = detail::safepointLeaveAddress();
     auto find = [&](const std::string& symbol) -> std::uintptr_t {
         for (std::size_t i = 0; i < names_.size(); ++i)
             if (names_[i] == symbol) return entries_[i];
@@ -98,15 +120,32 @@ NativeExecutable::NativeExecutable(const std::vector<EmittedFunction>& functions
     std::vector<std::string> unbound;
     for (std::size_t i = 0; i < functions.size(); ++i) {
         for (const auto& reloc : functions[i].relocations) {
-            const std::uintptr_t target = reloc.isRuntimeCall ? 0 : find(reloc.symbol);
+            std::uintptr_t target = 0;
+            if (reloc.isRuntimeCall) {
+                const auto binding = runtime.find(reloc.symbol);
+                if (binding != runtime.end()) target = binding->second;
+            } else {
+                target = find(reloc.symbol);
+            }
             if (target == 0) {
                 unbound.push_back(functions[i].name + " -> " + (reloc.isRuntimeCall ? "runtime:" : "") + reloc.symbol);
                 continue;
             }
             auto* site = bytes + offsets[i] + reloc.offset;
-            const std::int32_t delta = static_cast<std::int32_t>(
-                target - (reinterpret_cast<std::uintptr_t>(site) + 4));
-            std::memcpy(site, &delta, 4);
+            if (reloc.kind == EmittedFunction::Relocation::Kind::Absolute64) {
+                const std::uint64_t address = target;
+                std::memcpy(site, &address, sizeof(address));
+            } else {
+                const auto distance = static_cast<std::int64_t>(target) -
+                    static_cast<std::int64_t>(reinterpret_cast<std::uintptr_t>(site) + 4);
+                if (distance < std::numeric_limits<std::int32_t>::min() ||
+                    distance > std::numeric_limits<std::int32_t>::max()) {
+                    unbound.push_back(functions[i].name + " -> out-of-range rel32:" + reloc.symbol);
+                    continue;
+                }
+                const std::int32_t delta = static_cast<std::int32_t>(distance);
+                std::memcpy(site, &delta, sizeof(delta));
+            }
         }
     }
     if (!unbound.empty()) {
@@ -129,6 +168,29 @@ NativeExecutable::~NativeExecutable() {
 #if defined(ZL_NATIVE_EXEC_POSIX_MMAP)
     if (base_ != nullptr) ::munmap(base_, size_);
 #endif
+}
+
+std::vector<const void*> NativeExecutable::nativeFrameAddresses(
+    void* userData, const std::vector<NativeFrameRecord>& frames) {
+    const auto& self = *static_cast<const NativeExecutable*>(userData);
+    std::vector<const void*> addresses;
+    for (const auto& frame : frames) {
+        if (frame.functionIndex >= self.frameMetadata_.size())
+            throw std::out_of_range("native safepoint function index is out of range");
+        const auto& metadata = self.frameMetadata_[frame.functionIndex];
+        const SafepointMap* map = nullptr;
+        for (const auto& candidate : metadata.safepoints)
+            if (candidate.callOffset == frame.callOffset) { map = &candidate; break; }
+        if (map == nullptr)
+            throw std::out_of_range("native safepoint offset has no emitted root map");
+        for (const std::int32_t offset : map->referenceOffsets) {
+            std::uintptr_t raw = 0;
+            const auto* slot = reinterpret_cast<const std::uint8_t*>(frame.framePointer) + offset;
+            std::memcpy(&raw, slot, sizeof(raw));
+            if (raw != 0) addresses.push_back(reinterpret_cast<const void*>(raw));
+        }
+    }
+    return addresses;
 }
 
 std::size_t NativeExecutable::resolve(const std::string& spec, std::string& error) const {
@@ -170,23 +232,27 @@ NativeExecutable::Shape NativeExecutable::shape(std::size_t e, std::string& reas
     }
     bool all_int = returnClasses_[e] == ValueClass::Integer;
     bool all_float = returnClasses_[e] == ValueClass::Float;
+    bool all_reference = returnClasses_[e] == ValueClass::Reference;
     for (const auto cls : params) {
         if (cls != ValueClass::Integer) all_int = false;
         if (cls != ValueClass::Float) all_float = false;
+        if (cls != ValueClass::Reference) all_reference = false;
     }
     if (all_int) return Shape::kInt64;
     if (all_float) return Shape::kDouble;
+    if (all_reference) return Shape::kReference;
     std::string sig;
     for (std::size_t i = 0; i < params.size(); ++i) sig += (i ? ", " : "") + describeClass(params[i]);
     reason = "native execution driver: '" + names_[e] + "' has signature (" + sig + ") -> " +
-             describeClass(returnClasses_[e]) + "; the driver calls all-integer or all-double "
-             "signatures, because one cast describes exactly one register file";
+             describeClass(returnClasses_[e]) + "; the driver calls homogeneous integer, double, or "
+             "reference signatures, because each typed entry describes one register file";
     return Shape::kUnsupported;
 }
 
 bool NativeExecutable::callInt64(std::size_t e, const std::vector<std::int64_t>& args,
                                  std::int64_t& result, std::string& error) const {
     if (!ok_) { error = error_; return false; }
+    if (e >= names_.size()) { error = "native execution driver: bad entry index"; return false; }
 #if defined(ZL_NATIVE_EXEC_POSIX_MMAP)
     if (shape(e, error) != Shape::kInt64) {
         if (!error.empty() && error.rfind("native execution driver:", 0) == 0) return false;
@@ -199,9 +265,20 @@ bool NativeExecutable::callInt64(std::size_t e, const std::vector<std::int64_t>&
                 std::to_string(parameterClasses_[e].size()) + " argument(s), got " + std::to_string(args.size());
         return false;
     }
+    auto* session = beginNativeGcSession(const_cast<NativeExecutable*>(this),
+                                         &NativeExecutable::nativeFrameAddresses);
+    if (session == nullptr) {
+        error = "native execution driver: could not register GC safepoint session";
+        return false;
+    }
+    NativeGcSessionGuard scope(session);
     std::int64_t a[6] = {0, 0, 0, 0, 0, 0};
     for (std::size_t i = 0; i < args.size(); ++i) a[i] = args[i];
     result = reinterpret_cast<EntryFn>(entries_[e])(a[0], a[1], a[2], a[3], a[4], a[5]);
+    if (nativeGcSessionFailed(session)) {
+        error = "native execution driver: safepoint root publication failed";
+        return false;
+    }
     return true;
 #else
     (void)e; (void)args; (void)result; (void)error;
@@ -213,6 +290,7 @@ bool NativeExecutable::callInt64(std::size_t e, const std::vector<std::int64_t>&
 bool NativeExecutable::callDouble(std::size_t e, const std::vector<double>& args,
                                   double& result, std::string& error) const {
     if (!ok_) { error = error_; return false; }
+    if (e >= names_.size()) { error = "native execution driver: bad entry index"; return false; }
 #if defined(ZL_NATIVE_EXEC_POSIX_MMAP)
     if (shape(e, error) != Shape::kDouble) {
         if (!error.empty() && error.rfind("native execution driver:", 0) == 0) return false;
@@ -226,9 +304,59 @@ bool NativeExecutable::callDouble(std::size_t e, const std::vector<double>& args
     }
     // Six XMM argument registers exist; passing padding in unused ones is
     // exactly what the SysV calling convention allows.
+    auto* session = beginNativeGcSession(const_cast<NativeExecutable*>(this),
+                                         &NativeExecutable::nativeFrameAddresses);
+    if (session == nullptr) {
+        error = "native execution driver: could not register GC safepoint session";
+        return false;
+    }
+    NativeGcSessionGuard scope(session);
     double a[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     for (std::size_t i = 0; i < args.size(); ++i) a[i] = args[i];
     result = reinterpret_cast<DoubleFn>(entries_[e])(a[0], a[1], a[2], a[3], a[4], a[5]);
+    if (nativeGcSessionFailed(session)) {
+        error = "native execution driver: safepoint root publication failed";
+        return false;
+    }
+    return true;
+#else
+    (void)e; (void)args; (void)result; (void)error;
+    error = error_;
+    return false;
+#endif
+}
+
+bool NativeExecutable::callReference(std::size_t e, const std::vector<std::uintptr_t>& args,
+                                     std::uintptr_t& result, std::string& error) const {
+    if (!ok_) { error = error_; return false; }
+    if (e >= names_.size()) { error = "native execution driver: bad entry index"; return false; }
+#if defined(ZL_NATIVE_EXEC_POSIX_MMAP)
+    if (shape(e, error) != Shape::kReference) {
+        if (!error.empty() && error.rfind("native execution driver:", 0) == 0) return false;
+        error = "native execution driver: '" + names_[e] + "' is not an all-reference signature";
+        return false;
+    }
+    if (args.size() != parameterClasses_[e].size()) {
+        error = "native execution driver: '" + names_[e] + "' takes " +
+                std::to_string(parameterClasses_[e].size()) + " argument(s), got " + std::to_string(args.size());
+        return false;
+    }
+    auto* session = beginNativeGcSession(const_cast<NativeExecutable*>(this),
+                                         &NativeExecutable::nativeFrameAddresses);
+    if (session == nullptr) {
+        error = "native execution driver: could not register GC safepoint session";
+        return false;
+    }
+    NativeGcSessionGuard scope(session);
+    void* a[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    for (std::size_t i = 0; i < args.size(); ++i) a[i] = reinterpret_cast<void*>(args[i]);
+    void* value = reinterpret_cast<ReferenceFn>(entries_[e])(
+        a[0], a[1], a[2], a[3], a[4], a[5]);
+    result = reinterpret_cast<std::uintptr_t>(value);
+    if (nativeGcSessionFailed(session)) {
+        error = "native execution driver: safepoint root publication failed";
+        return false;
+    }
     return true;
 #else
     (void)e; (void)args; (void)result; (void)error;

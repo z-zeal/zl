@@ -172,7 +172,7 @@ void testShapes() {
     require(exec.shape(scale, reason) == zl::native::NativeExecutable::Shape::kDouble,
             "all-double signature classifies as kDouble");
     require(exec.shape(mix, reason) == zl::native::NativeExecutable::Shape::kUnsupported &&
-                reason.find("all-integer or all-double") != std::string::npos,
+                reason.find("homogeneous integer, double, or reference") != std::string::npos,
             "the mixed signature is refused with its shape printed: " + reason);
     double value = 0.0;
     require(exec.callDouble(scale, {2.0}, value, error) && value == 4.0,

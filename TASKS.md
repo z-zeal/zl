@@ -35,9 +35,10 @@ Priorities: **P0** produces a wrong result or refuses a valid program ·
 
 ## Start here
 
-Only the native line remains: P1-6, whose execution driver shipped 2026-09-20
-and whose remaining half is one value class at a time in the subset (refs and
-objects, gated on the GC map), plus PF-3, which follows it. Closed the same
+Only the native line remains: P1-6, whose execution driver shipped 2026-09-20;
+reference carry, frame maps, and runtime root publication are now in place.
+Object layout/field operations and the broader mixed-mode path remain, followed
+by PF-3. Closed the same
 day: P1-10 (stabilization gate - two fixtures, two written arguments, verdict
 in the [examples review](examples/REVIEW.md)), P2-5 (registry scope in
 [docs/packages.md](docs/packages.md)), and PF-1 + PF-2 at the re-measured
@@ -83,13 +84,14 @@ checker records the loop's numeric type and lowering uses it for its slots.
 
 ## P1 - promised capability, or a daily gap
 
-### P1-6 · Native backend: integers and doubles run; references are carried, objects stop at the GC map
+### P1-6 · Native backend: integers and doubles run; references are carried and rooted, language objects remain out of scope
 
 **Driver (2026-09-20):** `zl --run-native <file.zl> [--call NAME] [--int64 v |
 --double v]... [--iters n]` maps the emitted module executable, binds
 direct-call relocations, and refuses anything it cannot honestly call *by name
-and reason* (runtime imports, signatures that mix register files or carry
-references, more than six arguments, non-x86-64-Linux hosts).
+and reason* (unbound runtime imports, mixed register-file signatures, more than
+six arguments, non-x86-64-Linux hosts). The typed driver also supports borrowed
+all-reference calls; the CLI remains limited to scalar arguments.
 `tests/native_exec_parity.py` (ctest `native-exec-parity`) requires driver and
 VM to agree on `result` and accumulated `total` for both calling shapes - for
 the double kernel that is bit-for-bit agreement through the shortest
@@ -97,41 +99,44 @@ round-trip formatter - and prints the wall pairs (~6 ms machine code vs
 ~870 ms interpreter for `sumSquares`, 0.16 vs 24 ms for `poly`, per 10,000
 calls on the sandbox). See [docs/native-backend.md](docs/native-backend.md).
 
-**References carried (2026-11-22):** a managed reference is now *carried*, not
-used - a parameter, local, block parameter, return value, call argument or call
-result moves it through native code, and `FrameSlotInfo::isReference` marks the
-slot for the frame's GC map. Every *use* (equality, concatenation, field access,
-a method call) is still refused, and the driver still refuses a signature that
-carries one because `--run-native` cannot invent a reference from the command
-line. Safe because the tier cannot allocate and cannot call the runtime, so no
-collection can run while a native frame is live. Gate:
-`testReferencePassThrough` in `tests/native_backend_tests.cpp` (three carry
-shapes execute and round-trip a pointer; a use is refused with a reason).
-Planned next: [docs/native-gc-map.md](docs/native-gc-map.md).
+**Reference carry plus allocation/root publication (2026-11-22):** references
+move through parameters, locals, returns and calls; emitted frame maps cover
+slots and vreg spills. These are not separate deliverables from allocation:
+explicit runtime bindings may allocate, and the safepoint bridge must publish
+native-frame roots before collection can reclaim the new object. Every target
+call is wrapped by that bridge, which registers the frame, polls the coordinator,
+and resolves map addresses to typed GC roots. Unknown symbols fail closed.
+`NativeExecutable::callReference` exercises the borrowed-pointer shape, while
+the `--run-native` CLI still cannot invent pointers from scalar flags. Reference
+*uses* such as equality, fields and methods remain refused. The bundled gate
+`testNativeSafepointRootPublication` forces collection and verifies survival;
+`testEmittedFrameMap` pins metadata to emitted offsets. Both are in
+`tests/native_backend_tests.cpp`; see [docs/native-gc-map.md](docs/native-gc-map.md).
 
 **Remaining:**
 - The subset is still ~1.7% of the functions in a realistic module
   ([research/report.md](research/report.md) §2.7) - ints, floats and carried
-  refs, but no object layout, field access, collections, closures, exceptions
-  or async; the driver calls all-integer and all-double signatures and refuses
-  the mix by name.
+  refs, but no language-level object layout, field access, collections,
+  closures, exceptions or async; the driver calls homogeneous integer, double
+  or borrowed-reference signatures and refuses mixed shapes by name.
 - In-program mixed mode is unimplemented: `--backend native` compiles the subset
   and still runs the program on the VM.
 - Win64 is select-only (`TargetMachine::encoderAvailable()` false,
   `src/native/pipeline.cpp:59`); there is no arm64 encoder, so macOS CI
   cross-compiles to SysV.
 - No register allocator, no stack arguments, no unwind tables, no object-file
-  or JIT writer; the frame GC map and safepoints are planned in
-  [docs/native-gc-map.md](docs/native-gc-map.md) and are advisory until the tier
-  can allocate.
+  or JIT writer; language-level object construction/layout and field access are
+  still refused. The root bridge currently polls at calls, so call-free loops
+  can delay a rendezvous. See [docs/native-gc-map.md](docs/native-gc-map.md).
 - An arithmetic fault in driver-executed native bytes is `SIGILL`, not a
   catchable `ArithmeticError`.
 
-**Done when** one value class at a time joins the driver and the backend - refs
-are carried, and objects with the GC map that carries them are the useful next
-step ([docs/native-gc-map.md](docs/native-gc-map.md)) - until a named program
-(start again from `NativeExecBench.zl`, plus collections) runs end-to-end
-through `--backend native` with a measured wall time against the VM.
+**Done when** a named program (start again from `NativeExecBench.zl`, plus
+language-level heap objects and collections) runs end-to-end through
+`--backend native` with a measured wall time against the VM. Reference carry,
+frame maps, and the coupled runtime-allocation/root-publication safepoint gate
+are completed prerequisites, not substitutes for this end-to-end acceptance
+criterion ([docs/native-gc-map.md](docs/native-gc-map.md)).
 
 ---
 
@@ -168,6 +173,13 @@ confirmed already fixed on 2026-09-17; see [Done](#done) and
 
 Most recent first. Kept briefly so the gates that cover each fix are findable,
 then deleted - [docs/changelog.md](docs/changelog.md) is the permanent record.
+
+- [x] **Bundled native allocation and root publication** (2026-11-22) -
+  explicit runtime allocation reaches native call safepoints; frame maps are
+  resolved to typed roots, and forced collection proves the only native-frame
+  root survives. Kept coupled to allocation by acceptance criteria. Gates:
+  `testNativeSafepointRootPublication`, CTest 44/44, regression suite, examples
+  52/52 and native gate PASS; details in [docs/native-gc-map.md](docs/native-gc-map.md).
 
 - [x] **Native frame layouts and conservative safepoint maps** (2026-11-22) -
   emitted functions expose offsets/reference flags for every frame slot and vreg

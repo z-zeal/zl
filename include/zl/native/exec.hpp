@@ -1,10 +1,13 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "zl/native/emit.hpp"
+#include "zl/native/gc_bridge.hpp"
 #include "zl/native/lir.hpp"
 
 // ---------------------------------------------------------------------------
@@ -16,37 +19,41 @@
 // something to put those bytes in memory a CPU will execute, bind their call
 // sites, and hand back a result. This file is that driver: it maps an emitted
 // module executable, resolves direct calls among the module's own functions,
-// and offers typed entry for the calling shapes it can honestly speak today -
-// all-integer or all-double signatures, SysV. Everything else is refused
-// *before* any code runs, by name and with a reason:
+// binds explicit runtime helpers, and offers typed entry for all-integer,
+// all-double, and borrowed all-reference signatures under SysV. Unsupported
+// shapes are refused *before* any code runs, by name and with a reason:
 //
 //   * a call relocation that is not bound (a runtime import, or a callee the
 //     selection left out) - binding would point at nothing;
 //   * a function whose signature mixes register files, or whose result is not
-//     a scalar the casts cover - a double arrives in an XMM register, and a
-//     reference carries GC obligations the driver does not model;
+//     a scalar the typed entrypoints cover - a double arrives in an XMM
+//     register; reference entry is supported only through the borrowed-pointer
+//     API, not from command-line arguments;
 //   * a host this code does not target: execution is x86-64 Linux (the same
 //     guard the executable-native tests use); every other build constructs a
 //     NativeExecutable that reports `unsupported platform` rather than
 //     pretending.
 //
-// That refusal list is the current subset boundary made concrete. Growing it -
-// refs and objects with GC maps - is P1-6's remaining half; the driver is the
-// half that makes the bytes reachable at all.
+// The refusal list is the current subset boundary made concrete. Reference
+// carry and safepoint root publication are supported by the typed API; object
+// allocation/layout and field operations remain the next P1-6 steps.
 
 namespace zl::native {
 
-// The driver speaks two calling shapes, chosen by the signature it finds:
-// every-Integer in and out through `callInt64`, every-Float in and out
-// through `callDouble`. A signature that mixes the two is refused with a
-// reason - one C++ cast can only describe one register-file shape, and
-// hand-written thunks are not this file's business.
+// The driver speaks all-Integer and all-Float shapes through `callInt64` and
+// `callDouble`, plus a borrowed all-reference shape through `callReference`.
+// Mixed register-file signatures are refused with a reason; each C++ cast
+// describes one register-file shape, and general marshalling is out of scope.
+
+using NativeRuntimeBindings = std::unordered_map<std::string, std::uintptr_t>;
 
 class NativeExecutable {
 public:
-    // Takes the emitted functions plus their LIR signatures (parameter
-    // classes); binds inter-function calls; never binds runtime calls.
-    NativeExecutable(const std::vector<EmittedFunction>& functions, const LirModule& lir);
+    // Takes emitted functions plus LIR signatures, binds direct calls and
+    // the internal safepoint bridge. Runtime calls bind only when supplied in
+    // runtimeBindings; unknown symbols still fail closed.
+    NativeExecutable(const std::vector<EmittedFunction>& functions, const LirModule& lir,
+                     const NativeRuntimeBindings& runtimeBindings = {});
     ~NativeExecutable();
     NativeExecutable(const NativeExecutable&) = delete;
     NativeExecutable& operator=(const NativeExecutable&) = delete;
@@ -64,10 +71,10 @@ public:
     static constexpr std::size_t kNoEntry = static_cast<std::size_t>(-1);
     std::size_t resolve(const std::string& spec, std::string& error) const;
 
-    // The entry's call shape: everything Integer (kInt64), everything Float
-    // with a Float result (kDouble), or neither (kUnsupported, with the
-    // reason). Entries are what `resolve` returns.
-    enum class Shape { kInt64, kDouble, kUnsupported };
+    // The entry's call shape: homogeneous Integer, Float, or Reference values;
+    // other combinations are kUnsupported with a reason. Entries are what
+    // `resolve` returns.
+    enum class Shape { kInt64, kDouble, kReference, kUnsupported };
     Shape shape(std::size_t e, std::string& reason) const;
 
     // Call entry e with integer arguments (up to six, SysV integer ABI).
@@ -80,7 +87,19 @@ public:
     bool callDouble(std::size_t e, const std::vector<double>& args,
                     double& result, std::string& error) const;
 
+    // Typed reference entry used by the native runtime bridge and tests.
+    // References are borrowed raw managed addresses; the caller must keep
+    // them rooted until the generated prologue has spilled them.
+    bool callReference(std::size_t e, const std::vector<std::uintptr_t>& args,
+                       std::uintptr_t& result, std::string& error) const;
+
 private:
+    struct FrameMetadata {
+        std::vector<EmittedFrameLocation> locations;
+        std::vector<SafepointMap> safepoints;
+    };
+    static std::vector<const void*> nativeFrameAddresses(
+        void* userData, const std::vector<NativeFrameRecord>& frames);
     bool ok_{false};
     std::string error_;
     void* base_{nullptr};
@@ -89,6 +108,7 @@ private:
     std::vector<std::uintptr_t> entries_;
     std::vector<std::vector<ValueClass>> parameterClasses_;
     std::vector<ValueClass> returnClasses_;
+    std::vector<FrameMetadata> frameMetadata_;
 };
 
 } // namespace zl::native

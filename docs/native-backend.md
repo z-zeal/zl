@@ -176,9 +176,9 @@ Two decisions worth stating:
   a block parameter, a return value, a call argument or a call result — moved,
   stored, loaded, handed back. Every operation that would *use* one (equality,
   concatenation, field access, a method call) is refused, because it belongs to
-  the runtime. That is safe while the tier cannot allocate and cannot call the
-  runtime, so no collection can run while a native frame is live; the frame GC
-  map that makes the rest possible is planned in
+  the runtime. Explicitly bound runtime calls are now allowed through the
+  safepoint bridge, which publishes the frame roots before the runtime can
+  collect; object operations remain outside the native subset. Details are in
   [native-gc-map.md](native-gc-map.md).
 
 ## Calling convention
@@ -320,13 +320,14 @@ branches into blocks with parameters (which need a split critical edge).
 
 ## Runtime calls
 
-The escape hatch stays open. `CallRuntime` lowers to an ordinary direct call
-with the target's convention, and every symbol used is collected into
-`LirModule::runtimeImports`, so an operation that cannot yet be lowered directly
-can be routed to the existing runtime instead of forcing the whole function back
-onto the VM. `SelectionOptions::allowRuntimeCalls` gates it, because a runtime
-call has an ABI the caller must honour and that should be an explicit choice per
-pipeline rather than a silent fallback.
+The escape hatch stays open. `CallRuntime` lowers to an external absolute
+address call using the target's convention, and every symbol used is collected
+into `LirModule::runtimeImports`. `NativeExecutable` binds only symbols supplied
+in its explicit `NativeRuntimeBindings` table; an unknown runtime symbol still
+refuses the module. `SelectionOptions::allowRuntimeCalls` gates selection.
+Emitted calls are wrapped in a safepoint bridge, so bound helpers may allocate
+without losing native-frame roots. The command-line driver does not supply
+external runtime bindings.
 
 ## Execution driver
 
@@ -354,24 +355,21 @@ the machine - they are a measurement, not an assertion - but the sign does not
 move much: on the sandbox they measured on, the machine-code loop ran ~140x
 faster than the interpreter running the identical arithmetic.
 
-The driver speaks two call shapes, chosen by the signature it finds, and
-refuses everything else *by name and reason, before anything runs*: every
-parameter and the result Integer (SysV `int64` registers, at most six), or
-every parameter and the result Float (six XMM registers, result in `xmm0`).
-A signature that *mixes* the register files is refused rather than marshalled
-- one C++ cast describes exactly one shape, and faking the other would mean
-generating a thunk, which this driver does not do. Also refused: a module
-with an unbound call site or any runtime-call relocation (those symbols
-belong to the VM's world, and a GC-map-free native frame cannot enter it),
-and non-x86-64-Linux hosts (the same guard as the executable tests - other
-platforms get `unsupported platform`, not a guess). Those refusals are the
-subset boundary made operational: every one of them names the machinery the
-"deliberately missing" list below already keeps out. The driver still refuses a
-signature that carries a reference, and for a different reason than selection
-used to: `--run-native` can pass `--int64` and `--double`, and a managed
-reference cannot be invented from a command line. The backend itself can carry
-one (the tests call entries with raw pointers); growing that is P1-6's remaining
-half, planned in [native-gc-map.md](native-gc-map.md).
+The `--run-native` CLI exposes two input shapes: every parameter and result
+Integer (SysV `int64` registers, at most six), or every parameter and result
+Float (six XMM registers, result in `xmm0`). The `NativeExecutable` API also has
+a borrowed-pointer entry for all-reference signatures, used by the runtime
+bridge and backend tests; references cannot be invented from `--int64` or
+`--double` command-line arguments. Mixed register-file signatures are refused
+rather than marshalled - one C++ cast describes exactly one shape. Also refused
+are unbound call sites, runtime symbols absent from the caller-supplied binding
+table, and non-x86-64-Linux hosts. The per-call bridge registers an active
+native frame and polls the GC coordinator; on collection, frame-map addresses
+are resolved against the managed allocation registry and published as typed
+roots. The regression forces collection after a runtime helper allocates and
+checks the object survives solely through its native spill. Remaining P1-6 work
+is object layout and field access, not root publication; see
+[native-gc-map.md](native-gc-map.md).
 
 ## Tests
 
@@ -403,9 +401,9 @@ lower real ZL source through the real front end.
 ## What is deliberately missing
 
 Named so that no one has to discover them by reading the code: register
-allocation, stack argument passing, runtime participation in safepoints and
-collection from native frames (the frame layout and conservative call-site maps
-are exported but advisory; see [native-gc-map.md](native-gc-map.md)), unwind tables
+allocation and stack argument passing, ZL-level object creation/layout and
+field access (the driver can root objects returned by explicitly bound runtime
+helpers, but source-level `new` and fields are still refused), unwind tables
 (hence an arithmetic fault in natively executed code is a SIGILL trap, not a
 catchable `ArithmeticError` — the VM remains the tier where those are
 catchable), object layout and field access, string and collection operations,
