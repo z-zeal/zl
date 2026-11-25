@@ -1,0 +1,9 @@
+// Regression fixture - invalid/type_errors - CompoundAssignNonVariable
+// Compound assignment supports variables and fields, but not indexed targets
+// until indexed writes can preserve evaluate-once semantics.
+class CompoundAssignNonVariable {
+    func main(): void {
+        list<int> values = [1]
+        values[0] *= 2
+    }
+}

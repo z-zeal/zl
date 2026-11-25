@@ -46,7 +46,17 @@ std::optional<InfixBinding> infixBinding(TokenType type) {
         case TokenType::PERCENT: return InfixBinding{100, 101};
         case TokenType::POW:     return InfixBinding{120, 120}; // right-associative
         case TokenType::ASSIGN:
-        case TokenType::PLUS_EQ: return InfixBinding{1, 1};     // right-associative
+        case TokenType::PLUS_EQ:
+        case TokenType::MINUS_EQ:
+        case TokenType::STAR_EQ:
+        case TokenType::SLASH_EQ:
+        case TokenType::PERCENT_EQ:
+        case TokenType::BIT_AND_EQ:
+        case TokenType::BIT_OR_EQ:
+        case TokenType::BIT_XOR_EQ:
+        case TokenType::SHL_EQ:
+        case TokenType::SHR_EQ:
+        case TokenType::USHR_EQ: return InfixBinding{1, 1};     // right-associative
         default:                 return std::nullopt;
     }
 }
@@ -59,20 +69,17 @@ bool isUnary(TokenType type) {
            type == TokenType::NOT || type == TokenType::BIT_NOT;
 }
 
-// `target += value` becomes `target = target + value`.
-//
-// Only a plain variable name is accepted: the name is a string already, so no AST
-// clone is needed. A field (`x.count += 1`) or an element (`xs[i] += 1`) would
-// need the object/index sub-expression duplicated, and duplicating it changes how
-// many times a getter or index expression runs - so those report a clear error
-// instead of silently doing the wrong thing.
-NodePtr makePlusAssignExpr(const std::string& name, NodePtr value, std::size_t line) {
+// Compound assignment to a plain variable desugars to ordinary binary and
+// assignment nodes, preserving the checker's existing operator/assignment rules.
+// Field targets use a FieldAssignExpr so their receiver is evaluated once; an
+// index target remains unsupported until indexed assignment has a typed write path.
+NodePtr makeCompoundAssignExpr(const std::string& name, TokenType op, NodePtr value, std::size_t line) {
     auto identifier = std::make_unique<Identifier>();
     identifier->name = name;
     identifier->line = line;
 
     auto binary = std::make_unique<BinaryExpr>();
-    binary->op = TokenType::PLUS;
+    binary->op = op;
     binary->left = std::move(identifier);
     binary->right = std::move(value);
     binary->line = line;
@@ -82,6 +89,49 @@ NodePtr makePlusAssignExpr(const std::string& name, NodePtr value, std::size_t l
     node->value = std::move(binary);
     node->line = line;
     return node;
+}
+
+bool isCompoundAssign(TokenType type) {
+    return type == TokenType::PLUS_EQ || type == TokenType::MINUS_EQ ||
+           type == TokenType::STAR_EQ || type == TokenType::SLASH_EQ ||
+           type == TokenType::PERCENT_EQ || type == TokenType::BIT_AND_EQ ||
+           type == TokenType::BIT_OR_EQ || type == TokenType::BIT_XOR_EQ ||
+           type == TokenType::SHL_EQ || type == TokenType::SHR_EQ ||
+           type == TokenType::USHR_EQ;
+}
+
+TokenType compoundOperator(TokenType type) {
+    switch (type) {
+        case TokenType::PLUS_EQ: return TokenType::PLUS;
+        case TokenType::MINUS_EQ: return TokenType::MINUS;
+        case TokenType::STAR_EQ: return TokenType::STAR;
+        case TokenType::SLASH_EQ: return TokenType::SLASH;
+        case TokenType::PERCENT_EQ: return TokenType::PERCENT;
+        case TokenType::BIT_AND_EQ: return TokenType::BIT_AND;
+        case TokenType::BIT_OR_EQ: return TokenType::BIT_OR;
+        case TokenType::BIT_XOR_EQ: return TokenType::BIT_XOR;
+        case TokenType::SHL_EQ: return TokenType::SHL;
+        case TokenType::SHR_EQ: return TokenType::SHR;
+        case TokenType::USHR_EQ: return TokenType::USHR;
+        default: return TokenType::UNKNOWN;
+    }
+}
+
+const char* compoundSpelling(TokenType type) {
+    switch (type) {
+        case TokenType::PLUS_EQ: return "+=";
+        case TokenType::MINUS_EQ: return "-=";
+        case TokenType::STAR_EQ: return "*=";
+        case TokenType::SLASH_EQ: return "/=";
+        case TokenType::PERCENT_EQ: return "%=";
+        case TokenType::BIT_AND_EQ: return "&=";
+        case TokenType::BIT_OR_EQ: return "|=";
+        case TokenType::BIT_XOR_EQ: return "^=";
+        case TokenType::SHL_EQ: return "<<=";
+        case TokenType::SHR_EQ: return ">>=";
+        case TokenType::USHR_EQ: return ">>>=";
+        default: return "compound assignment";
+    }
 }
 
 // Ternary binds tighter than assignment (`a = c ? b : d` assigns the whole
@@ -219,16 +269,27 @@ NodePtr ExpressionParser::parsePratt(int minBindingPower) {
 
         Token op = parser_.advance();
 
-        // `+=` sits at assignment's level and is right-associative, so it shares
-        // the `=` arm: only a plain variable name can be desugared without
-        // duplicating a sub-expression.
-        if (type == TokenType::PLUS_EQ) {
-            if (left->kind != NodeKind::Identifier) {
-                parser_.error("Left side of '+=' must be a variable name");
-            }
-            std::string name = static_cast<Identifier*>(left.get())->name;
+        // Compound assignments sit at assignment's level and are right-
+        // associative. Variables desugar directly; fields get a dedicated
+        // assign node so their receiver is evaluated once.
+        if (isCompoundAssign(type)) {
             NodePtr value = parsePratt(binding->rightBindingPower);
-            left = makePlusAssignExpr(name, std::move(value), op.line);
+            if (left->kind == NodeKind::Identifier) {
+                const std::string name = static_cast<Identifier*>(left.get())->name;
+                left = makeCompoundAssignExpr(name, compoundOperator(type), std::move(value), op.line);
+            } else if (left->kind == NodeKind::FieldAccessExpr) {
+                auto field = static_cast<FieldAccessExpr*>(left.get());
+                auto node = std::make_unique<FieldAssignExpr>();
+                node->line = op.line;
+                node->object = std::move(field->object);
+                node->fieldName = field->fieldName;
+                node->compoundOp = compoundOperator(type);
+                node->value = std::move(value);
+                left = std::move(node);
+            } else {
+                parser_.error("Left side of '" + std::string(compoundSpelling(type)) +
+                              "' must be a variable name or field access");
+            }
             continue;
         }
 

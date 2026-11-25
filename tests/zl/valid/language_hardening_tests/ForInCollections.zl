@@ -1,0 +1,105 @@
+// Regression fixture - valid/language_hardening_tests - ForInCollections
+// For-in yields list/set elements and map keys for both native collections and
+// their generic class wrappers. The source expression is evaluated once; maps
+// and sets snapshot their keys/elements, while lists capture the initial length.
+// break/continue retain their regular loop behavior.
+
+class ForInCollections {
+    int makeCalls = 0
+
+    func makeNumbers(): list<int> {
+        this.makeCalls = this.makeCalls + 1
+        return [2, 4, 6, 8]
+    }
+
+    func main(): void {
+        var self = new ForInCollections()
+        var total = 0
+        var count = 0
+        for value in self.makeNumbers() {
+            total += value
+            count += 1
+            if (value == 4) { continue }
+            if (value == 8) { break }
+        }
+        if (total != 20 || count != 4) {
+            throw new Exception("ForInCollections failed: loop values or control flow")
+        }
+        if (self.makeCalls != 1) {
+            throw new Exception("ForInCollections failed: collection expression evaluated more than once")
+        }
+
+        list<string> words = ["a", "b", "c"]
+        var joined = ""
+        for word in words {
+            joined += word
+        }
+        if (joined != "abc") {
+            throw new Exception("ForInCollections failed: element type inference")
+        }
+
+        list<int> empty = []
+        var emptyCount = 0
+        for item in empty {
+            emptyCount += item
+        }
+        if (emptyCount != 0) {
+            throw new Exception("ForInCollections failed: empty list")
+        }
+
+        // The high-level List<T> wrapper is equally iterable; its backing
+        // native list stays an implementation detail of the lowering.
+        var wrapped = new List<int>()
+        wrapped.push(3)
+        wrapped.push(5)
+        var wrappedTotal = 0
+        for wrappedValue in wrapped {
+            wrappedTotal += wrappedValue
+        }
+        if (wrappedTotal != 8) {
+            throw new Exception("ForInCollections failed: List<T> wrapper iteration")
+        }
+
+        var unique = new Set<int>()
+        unique.add(11)
+        unique.add(13)
+        unique.add(11)
+        var setTotal = 0
+        for member in unique {
+            setTotal += member
+        }
+        if (setTotal != 24) {
+            throw new Exception("ForInCollections failed: Set<T> iteration")
+        }
+        set<int> rawSet = Collection.newSet()
+        Collection.setAdd(rawSet, 23)
+        var rawSetTotal = 0
+        for member in rawSet {
+            rawSetTotal += member
+        }
+        if (rawSetTotal != 23) {
+            throw new Exception("ForInCollections failed: native set iteration")
+        }
+
+        var scores = new Map<string, int>()
+        scores.put("alpha", 17)
+        scores.put("beta", 19)
+        var mapTotal = 0
+        for key in scores {
+            mapTotal += scores.get(key)
+        }
+        if (mapTotal != 36) {
+            throw new Exception("ForInCollections failed: Map<K,V> key iteration")
+        }
+        map<string, int> rawMap = Collection.newMap()
+        Collection.mapSet(rawMap, "gamma", 29)
+        var rawMapTotal = 0
+        for key in rawMap {
+            rawMapTotal += Collection.mapGet(rawMap, key)
+        }
+        if (rawMapTotal != 29) {
+            throw new Exception("ForInCollections failed: native map key iteration")
+        }
+        log("ok")
+    }
+}

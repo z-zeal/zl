@@ -1,0 +1,107 @@
+// Regression fixture - valid/language_hardening_tests - CompoundAssignment
+// Compound operators share ordinary arithmetic and assignment checking and
+// preserve right-associative assignment semantics.
+
+class CompoundAssignmentBox {
+    public int value
+
+    func CompoundAssignmentBox(int value): void {
+        this.value = value
+    }
+
+    operator +(CompoundAssignmentBox other): CompoundAssignmentBox {
+        return new CompoundAssignmentBox(this.value + other.value)
+    }
+}
+
+class CompoundAssignmentHolder {
+    public CompoundAssignmentBox value
+
+    func CompoundAssignmentHolder(CompoundAssignmentBox value): void {
+        this.value = value
+    }
+}
+
+class CompoundAssignment {
+    static int staticCount = 2
+    int value = 4
+    int receiverCalls = 0
+    int fieldBits = 1
+
+    func receiver(): CompoundAssignment {
+        this.receiverCalls = this.receiverCalls + 1
+        return this
+    }
+
+    func main(): void {
+        int count = 20
+        count -= 3
+        count *= 2
+        count %= 7
+        if (count != 6) {
+            throw new Exception("CompoundAssignment failed: integer operators")
+        }
+
+        double ratio = 8.0
+        ratio /= 2.0
+        ratio *= 1.5
+        ratio -= 1.0
+        if (ratio != 5.0) {
+            throw new Exception("CompoundAssignment failed: double operators")
+        }
+
+        int total = 1
+        int factor = 2
+        int scale = 3
+        total += factor *= scale
+        if (total != 7 || factor != 6) {
+            throw new Exception("CompoundAssignment failed: right associativity")
+        }
+
+        int bits = 1
+        bits <<= 3
+        bits |= 2
+        bits &= 14
+        bits ^= 3
+        bits >>= 1
+        bits >>>= 1
+        if (bits != 2) {
+            throw new Exception("CompoundAssignment failed: bitwise and shift operators")
+        }
+
+        CompoundAssignment.staticCount += 3
+        if (CompoundAssignment.staticCount != 5) {
+            throw new Exception("CompoundAssignment failed: static field update")
+        }
+
+        var self = new CompoundAssignment()
+        self.receiver().value += 5
+        if (self.value != 9 || self.receiverCalls != 1) {
+            throw new Exception("CompoundAssignment failed: field target evaluated more than once")
+        }
+        int assigned = self.receiver().value += 1
+        if (assigned != 10 || self.value != 10 || self.receiverCalls != 2) {
+            throw new Exception("CompoundAssignment failed: field assignment result")
+        }
+        self.value *= 2
+        if (self.value != 20) {
+            throw new Exception("CompoundAssignment failed: field update")
+        }
+        self.fieldBits |= 2
+        self.fieldBits <<= 2
+        self.fieldBits ^= 4
+        self.fieldBits &= 14
+        self.fieldBits >>= 1
+        self.fieldBits >>>= 1
+        if (self.fieldBits != 2) {
+            throw new Exception("CompoundAssignment failed: bitwise field updates")
+        }
+
+        var box = new CompoundAssignmentHolder(new CompoundAssignmentBox(6))
+        box.value += new CompoundAssignmentBox(7)
+        if (box.value.value != 13) {
+            throw new Exception("CompoundAssignment failed: overloaded field operator")
+        }
+        log("ok")
+    }
+}

@@ -408,9 +408,16 @@ struct ForStmt : AstNode {
     NodePtr body;       // a BlockStmt
     // Range loop numeric type: INT unless any of start/end/step is DOUBLE.
     mutable bool isDoubleRange{false};
+    enum class IterableKind : std::uint8_t {
+        NativeList, ListWrapper, NativeSet, SetWrapper, NativeMap, MapWrapper
+    };
+    // Map iteration yields keys; set iteration yields elements. Wrapper kinds
+    // read the native backing container from `__native` before snapshotting.
+    mutable IterableKind iterableKind{IterableKind::NativeList};
     // Hidden storage bindings for a collection loop. The checker assigns
     // these through SymbolTable so they cannot collide with source variables.
     mutable std::string iterableStorageName;
+    mutable std::string iterationStorageName;
     mutable std::string indexStorageName;
     ForStmt() : AstNode(NodeKind::ForStmt) {}
 };
@@ -628,6 +635,11 @@ struct FieldAssignExpr : AstNode {
     NodePtr object;         // the expression producing the object
     std::string fieldName;
     NodePtr value;
+    // UNKNOWN means ordinary `=`; otherwise the underlying operator (`+`,
+    // `-`, ...) reads and updates the field with one receiver evaluation.
+    TokenType compoundOp{TokenType::UNKNOWN};
+    mutable bool isOperatorOverload{false};
+    mutable DispatchSignature resolvedOperatorDispatch;
     mutable bool isStaticFieldAssign{false};
     mutable std::string staticFieldClassName;
     FieldAssignExpr() : AstNode(NodeKind::FieldAssignExpr) {}

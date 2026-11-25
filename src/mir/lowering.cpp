@@ -1538,6 +1538,56 @@ struct FunctionLowerer {
 
     [[nodiscard]] Operand fieldAssign(const zl::FieldAssignExpr& node) {
         const SourceLocation loc = location(&node);
+        if (node.compoundOp != zl::TokenType::UNKNOWN) {
+            const TypeId resultType = typeOfNode(&node);
+            TypeId fieldType = ctx.builder.types().unknownType();
+            Operand previous = Operand::none();
+            Operand base = Operand::none();
+            if (node.isStaticFieldAssign) {
+                for (const auto& field : ctx.builder.module().statics) {
+                    if (field.className == node.staticFieldClassName && field.name == node.fieldName) {
+                        fieldType = field.type;
+                        break;
+                    }
+                }
+                previous = Operand::temp(fb.emitStaticLoad(node.staticFieldClassName, node.fieldName,
+                                                            fieldType, loc), fieldType);
+            } else {
+                base = expression(node.object.get());
+                if (base.isNone()) return Operand::none();
+                fieldType = fieldTypeOf(base.type, node.fieldName);
+                previous = Operand::temp(fb.emitFieldLoad(base, node.fieldName, fieldType, loc), fieldType);
+            }
+            Operand rhs = expression(node.value.get());
+            if (rhs.isNone()) return Operand::none();
+            Operand result = Operand::none();
+            if (node.isOperatorOverload) {
+                const Type* receiverType = ctx.builder.types().find(previous.type);
+                const std::string receiverClass = operandTypeName(previous);
+                if (receiverClass.empty()) {
+                    unsupported(&node, "overloaded compound operator on a receiver whose class could not be resolved");
+                    return Operand::none();
+                }
+                result = Operand::temp(fb.emitInvokeMethod(previous, receiverClass,
+                                                           node.resolvedOperatorDispatch.name, {rhs},
+                                                           resultType, loc,
+                                                           receiverType ? receiverType->arguments
+                                                                        : std::vector<TypeId>{}),
+                                       resultType);
+            } else {
+                result = Operand::temp(fb.emitBinary(binaryOpcode(node.compoundOp), previous, rhs,
+                                                     resultType, loc), resultType);
+            }
+            result = coerce(result, fieldType, loc);
+            if (result.isNone()) return Operand::none();
+            if (node.isStaticFieldAssign) {
+                fb.emitStaticStore(node.staticFieldClassName, node.fieldName, result, loc);
+            } else {
+                fb.emitFieldStore(base, node.fieldName, result, loc);
+            }
+            return result;
+        }
+
         Operand value = expression(node.value.get());
         if (value.isNone()) return Operand::none();
         if (node.isStaticFieldAssign) {
@@ -1898,11 +1948,34 @@ struct FunctionLowerer {
                                                 zl::OwnershipKind::GC, {}, loc);
             const SlotId endSlot = fb.addSlot("__for_in_end", arena.intType(), true,
                                               zl::OwnershipKind::GC, {}, loc);
+            const TypeId snapshotType = arena.listType(elementType);
+            const SlotId snapshotSlot = fb.addSlot(node.iterationStorageName, snapshotType, true,
+                                                   zl::OwnershipKind::GC, {}, loc);
             const SlotId valueSlot = defineSlot(node.storageName, node.varName, elementType, true,
                                                 zl::OwnershipKind::GC, &node);
             fb.emitStore(collectionSlot, collection, loc);
-            const Operand storedCollection = Operand::temp(fb.emitLoad(collectionSlot, loc), collectionType);
-            const Operand length = callNative("Collection.length", {storedCollection}, arena.intType(), loc);
+            using IterableKind = zl::ForStmt::IterableKind;
+            const bool wrapper = node.iterableKind == IterableKind::ListWrapper ||
+                                 node.iterableKind == IterableKind::SetWrapper ||
+                                 node.iterableKind == IterableKind::MapWrapper;
+            const TypeId rawCollectionType = wrapper ? fieldTypeOf(collectionType, "__native")
+                                                     : collectionType;
+            auto loadRawCollection = [&]() {
+                const Operand stored = Operand::temp(fb.emitLoad(collectionSlot, loc), collectionType);
+                if (!wrapper) return stored;
+                return Operand::temp(fb.emitFieldLoad(stored, "__native", rawCollectionType, loc),
+                                     rawCollectionType);
+            };
+            Operand snapshot = loadRawCollection();
+            if (node.iterableKind == IterableKind::NativeSet || node.iterableKind == IterableKind::SetWrapper) {
+                snapshot = callNative("Collection.setItems", {snapshot}, snapshotType, loc);
+            } else if (node.iterableKind == IterableKind::NativeMap || node.iterableKind == IterableKind::MapWrapper) {
+                snapshot = callNative("Collection.mapKeys", {snapshot}, snapshotType, loc);
+            }
+            if (snapshot.isNone()) return;
+            fb.emitStore(snapshotSlot, snapshot, loc);
+            const Operand snapshotValue = Operand::temp(fb.emitLoad(snapshotSlot, loc), snapshotType);
+            const Operand length = callNative("Collection.length", {snapshotValue}, arena.intType(), loc);
             fb.emitStore(endSlot, length, loc);
             fb.emitStore(indexSlot, Operand::constant(ctx.builder.constantInt(0), arena.intType()), loc);
 
@@ -1921,7 +1994,7 @@ struct FunctionLowerer {
             fb.emitBranch(keepGoing, bodyBlock, exitBlock, loc);
 
             gotoBlock(bodyBlock);
-            const Operand listValue = Operand::temp(fb.emitLoad(collectionSlot, loc), collectionType);
+            const Operand listValue = Operand::temp(fb.emitLoad(snapshotSlot, loc), snapshotType);
             const Operand itemIndex = Operand::temp(fb.emitLoad(indexSlot, loc), arena.intType());
             const Operand item = callNative("Collection.get", {listValue, itemIndex}, elementType, loc);
             if (item.isNone()) return;

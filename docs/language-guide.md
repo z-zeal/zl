@@ -51,6 +51,18 @@ This is enforced by the compiler pipeline. Errors are reported in three categori
 **An explicit type comes BEFORE the name, Java-style:** `Animal a = new Dog(...)`,
 `int total = 0`. The annotation-after-colon spelling `var x: int` is a syntax error.
 
+**Compound assignment** is supported on plain variables and fields: `+=`, `-=`, `*=`, `/=`,
+`%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`, and `>>>=` use the same operator and type
+checks as `x = x op value`. Field targets are supported with their receiver
+evaluated once; indexed assignment is not supported by the language yet.
+
+```zl
+int count = 10
+count -= 2
+count *= 3
+count %= 7
+```
+
 **Methods default to `private`.** Omitting a modifier on a method makes it private to
 its class, so cross-class calls need an explicit `public` (or `protected` for
 subclasses). Static *fields* without a modifier are likewise private.
@@ -361,16 +373,30 @@ the native signature catalog rather than in library-specific compiler branches.
 
 ## Generic collections
 
-Typed native `list<T>` values can be traversed directly with `for value in list`.
-The collection expression is evaluated once, and the loop captures its initial
-length; the inferred element type is available in the body. This form currently
-supports native lists (not maps or sets); numeric ranges remain `for i in
-start..end` with an optional `step`.
+Native `list<T>` and `List<T>` values, native `set<T>` and `Set<T>` values,
+and native `map<K,V>` and `Map<K,V>` values can be traversed with `for value in
+collection`. Lists yield elements, sets yield elements, and maps yield keys.
+The collection expression is evaluated once; the loop captures its initial
+length. Set elements and map keys are snapshotted before the loop. Map keys keep
+the map's insertion order; set iteration order is not a language guarantee. The
+inferred element/key type is available in the body. Numeric ranges remain `for i in start..end` with an optional `step`.
 
 ```zl
 list<string> names = ["Ada", "Grace"]
 for name in names {
     log(name)
+}
+
+var tags = new Set<string>()
+tags.add("compiler")
+for tag in tags {
+    log(tag)
+}
+
+var scores = new Map<string, int>()
+scores.put("Ada", 98)
+for name in scores {               // maps yield keys
+    log(name + ": " + scores.get(name))
 }
 ```
 
