@@ -514,7 +514,13 @@ void Compiler::compileForStmt(const ForStmt* node) {
         // matching the range loop's one-time evaluation of its end expression.
         compileExpression(node->iterable.get());
         emit(OpCode::DefineVar, chunk_.addName(node->iterableStorageName), node->line);
-        emit(OpCode::LoadVar, chunk_.addName(node->iterableStorageName), node->line);
+        auto loadRawList = [&]() {
+            emit(OpCode::LoadVar, chunk_.addName(node->iterableStorageName), node->line);
+            if (node->isListWrapper) {
+                emit(OpCode::GetField, chunk_.addName("__native"), node->line);
+            }
+        };
+        loadRawList();
         emit(OpCode::CallNative, *lengthIdx, node->line);
         emit(OpCode::DefineVar, chunk_.addName(endName), node->line);
         emit(OpCode::PushConst, chunk_.addConstant(Value{std::int64_t{0}}), node->line);
@@ -527,7 +533,7 @@ void Compiler::compileForStmt(const ForStmt* node) {
         emit(OpCode::RangeContinue, 0, node->line);
         const std::size_t exitJump = emit(OpCode::JumpIfFalse, 0, node->line);
 
-        emit(OpCode::LoadVar, chunk_.addName(node->iterableStorageName), node->line);
+        loadRawList();
         emit(OpCode::LoadVar, chunk_.addName(node->indexStorageName), node->line);
         emit(OpCode::CallNative, *getIdx, node->line);
         emit(OpCode::DefineVar, chunk_.addName(node->storageName), node->line);

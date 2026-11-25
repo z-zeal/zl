@@ -408,6 +408,9 @@ struct ForStmt : AstNode {
     NodePtr body;       // a BlockStmt
     // Range loop numeric type: INT unless any of start/end/step is DOUBLE.
     mutable bool isDoubleRange{false};
+    // True when the iterable is the generic List<T> wrapper; its native storage
+    // lives in the compiler-known `__native` field rather than being the list.
+    mutable bool isListWrapper{false};
     // Hidden storage bindings for a collection loop. The checker assigns
     // these through SymbolTable so they cannot collide with source variables.
     mutable std::string iterableStorageName;

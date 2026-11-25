@@ -1901,8 +1901,16 @@ struct FunctionLowerer {
             const SlotId valueSlot = defineSlot(node.storageName, node.varName, elementType, true,
                                                 zl::OwnershipKind::GC, &node);
             fb.emitStore(collectionSlot, collection, loc);
-            const Operand storedCollection = Operand::temp(fb.emitLoad(collectionSlot, loc), collectionType);
-            const Operand length = callNative("Collection.length", {storedCollection}, arena.intType(), loc);
+            const TypeId rawCollectionType = node.isListWrapper
+                                                 ? fieldTypeOf(collectionType, "__native")
+                                                 : collectionType;
+            auto loadRawCollection = [&]() {
+                const Operand stored = Operand::temp(fb.emitLoad(collectionSlot, loc), collectionType);
+                if (!node.isListWrapper) return stored;
+                return Operand::temp(fb.emitFieldLoad(stored, "__native", rawCollectionType, loc),
+                                     rawCollectionType);
+            };
+            const Operand length = callNative("Collection.length", {loadRawCollection()}, arena.intType(), loc);
             fb.emitStore(endSlot, length, loc);
             fb.emitStore(indexSlot, Operand::constant(ctx.builder.constantInt(0), arena.intType()), loc);
 
@@ -1921,7 +1929,7 @@ struct FunctionLowerer {
             fb.emitBranch(keepGoing, bodyBlock, exitBlock, loc);
 
             gotoBlock(bodyBlock);
-            const Operand listValue = Operand::temp(fb.emitLoad(collectionSlot, loc), collectionType);
+            const Operand listValue = loadRawCollection();
             const Operand itemIndex = Operand::temp(fb.emitLoad(indexSlot, loc), arena.intType());
             const Operand item = callNative("Collection.get", {listValue, itemIndex}, elementType, loc);
             if (item.isNone()) return;

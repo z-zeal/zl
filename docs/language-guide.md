@@ -361,11 +361,11 @@ the native signature catalog rather than in library-specific compiler branches.
 
 ## Generic collections
 
-Typed native `list<T>` values can be traversed directly with `for value in list`.
-The collection expression is evaluated once, and the loop captures its initial
-length; the inferred element type is available in the body. This form currently
-supports native lists (not maps or sets); numeric ranges remain `for i in
-start..end` with an optional `step`.
+Typed native `list<T>` values and the high-level `List<T>` wrapper can be
+traversed directly with `for value in list`. The collection expression is
+evaluated once, and the loop captures its initial length; the inferred element
+type is available in the body. Maps and sets are not iterable with this form
+yet; numeric ranges remain `for i in start..end` with an optional `step`.
 
 ```zl
 list<string> names = ["Ada", "Grace"]

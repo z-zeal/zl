@@ -1,5 +1,17 @@
 # Development Checkpoints
 
+## 2026-11-22 - also iterate the high-level `List<T>` wrapper
+
+The first `for value in list<T>` implementation handled native lowercase
+`list<T>` only, even though everyday ZL code is encouraged to use the `List<T>`
+class. The loop now accepts both. For wrapper instances, each generated read
+unwraps the compiler-known `__native` backing field; source-level evaluation
+still happens once, and the initial length is still snapshotted. Maps and sets
+remain out of scope.
+
+`ForInList.zl` now covers both native `list<T>` and `List<T>` on AST and MIR.
+Gates: examples 52/52, regressions 117/117, ctest 44/44, and native gate PASS.
+
 ## 2026-11-22 - iterate a native list with `for value in values`
 
 `for` previously accepted only a numeric range. It now also accepts a typed

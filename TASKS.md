@@ -64,8 +64,8 @@ failing at run time instead of at the use.
 
 The remaining suggestions from that audit do not need separate syntax: `++`
 is written as `x += 1`, and `match` already covers switch-style branching. The
-new `for value in list<T>` form iterates a typed native list in order; maps/sets
-remain out of scope. The
+new `for value in list<T>` form iterates typed native lists and `List<T>`
+wrappers in order; maps/sets remain out of scope. The
 literal spellings and the
 conditional expression are done - hex, binary, `_` separators, unary `+`, a
 trailing dot and `cond ? then : else` closed the same day as exponent notation.

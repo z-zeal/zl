@@ -3553,19 +3553,23 @@ void TypeChecker::checkForStmt(const ForStmt* node) {
 
     if (node->iterable) {
         const InferredType collection = inferExpr(node->iterable.get());
-        if (collection.type != ZlType::LIST) {
-            typeError("for-in currently requires a list<T> collection", node->line);
+        const TypeName collectionName = collection.className.empty()
+                                            ? TypeName{}
+                                            : parseTypeName(collection.className);
+        const bool nativeList = collection.type == ZlType::LIST &&
+                                (collection.className.empty() || collectionName.name == "list");
+        const bool listWrapper = collection.type == ZlType::OBJECT &&
+                                 collectionName.name == "List" && collectionName.args.size() == 1;
+        if (!nativeList && !listWrapper) {
+            typeError("for-in requires a list<T> or List<T> collection", node->line);
         }
+        node->isListWrapper = listWrapper;
 
         TypeAnnotation elementAnnotation;
-        if (collection.className.empty()) {
-            elementAnnotation.name = "unknown";
-        } else {
-            const TypeName collectionName = parseTypeName(collection.className);
-            if (collectionName.name != "list" || collectionName.args.size() != 1) {
-                typeError("for-in currently requires a list<T> collection", node->line);
-            }
+        if (collectionName.args.size() == 1) {
             elementAnnotation = typeAnnotationFromName(collectionName.args.front());
+        } else {
+            elementAnnotation.name = "unknown";
         }
         const SymbolTable::VarInfo elementInfo = variableInfo(elementAnnotation);
 
