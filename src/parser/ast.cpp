@@ -40,6 +40,7 @@ void forEachChild(const AstNode* node, const std::function<void(const AstNode*)>
         }
         case NodeKind::ForStmt: {
             const auto& statement = static_cast<const ForStmt&>(*node);
+            visit(statement.iterable.get());
             visit(statement.start.get());
             visit(statement.end.get());
             visit(statement.step.get());

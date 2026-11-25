@@ -2,6 +2,7 @@
 #include "zl/lexer/lexer.hpp"
 
 #include <cctype>
+#include <limits>
 #include <unordered_map>
 
 namespace zl {
@@ -92,6 +93,50 @@ bool Lexer::hasExponentDigits() const {
     return i < source_.size() && std::isdigit(static_cast<unsigned char>(source_[i]));
 }
 
+namespace {
+
+// Digit value of `c` in `base` (2 or 16), or -1 when `c` is not a digit of
+// that base. Case-insensitive for hex letters.
+int digitValue(char c, int base) {
+    int value;
+    if (c >= '0' && c <= '9') value = c - '0';
+    else if (base == 16 && c >= 'a' && c <= 'f') value = c - 'a' + 10;
+    else if (base == 16 && c >= 'A' && c <= 'F') value = c - 'A' + 10;
+    else return -1;
+    return value < base ? value : -1;
+}
+
+// True when `c` can begin an identifier, which is what keeps a trailing `.` on
+// a number from swallowing a member access such as `5.foo`.
+bool startsIdentifier(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+}
+
+// True when a `0x`/`0X`/`0b`/`0B` prefix ending at `prefixEnd` is followed by
+// at least one digit of that base, optionally separated by `_`. Lookahead only.
+bool prefixedDigitsFollow(const std::string& source, std::size_t prefixEnd, int base) {
+    std::size_t i = prefixEnd;
+    bool sawDigit = false;
+    while (i < source.size()) {
+        const char c = source[i];
+        if (c == '_') {
+            // A separator must sit between digits; anything else ends the run.
+            if (!sawDigit) return false;
+            ++i;
+            continue;
+        }
+        if (digitValue(c, base) >= 0) {
+            sawDigit = true;
+            ++i;
+            continue;
+        }
+        break;
+    }
+    return sawDigit;
+}
+
+} // namespace
+
 char Lexer::advance() {
     char c = source_[pos_++];
     if (c == '\n') {
@@ -151,15 +196,77 @@ Token Lexer::scanNumber() {
         return Token{type, text, startLine, startCol};
     }
 
-    while (!isAtEnd() && std::isdigit(static_cast<unsigned char>(peek()))) {
-        text += advance();
+    // Hexadecimal and binary. The lexeme is rewritten to the equivalent plain
+    // decimal digits, because every consumer downstream parses `Literal::raw`
+    // with base 10 (`std::stoll`, `std::stod`, array sizes, pattern keys, the
+    // native emitter). Resolving the base here keeps those sites unchanged.
+    if (peek() == '0') {
+        const char marker = peekNext();
+        const int base = (marker == 'x' || marker == 'X') ? 16 : (marker == 'b' || marker == 'B') ? 2 : 0;
+        if (base != 0 && prefixedDigitsFollow(source_, pos_ + 2, base)) {
+            advance(); // '0'
+            advance(); // 'x'/'X'/'b'/'B'
+            unsigned long long magnitude = 0;
+            bool saturated = false;
+            while (!isAtEnd()) {
+                const char c = peek();
+                if (c == '_') {
+                    advance();
+                    continue;
+                }
+                const int digit = digitValue(c, base);
+                if (digit < 0) break;
+                advance();
+                if (!saturated) {
+                    if (magnitude > (std::numeric_limits<unsigned long long>::max() - static_cast<unsigned long long>(digit)) / static_cast<unsigned long long>(base)) {
+                        saturated = true; // keep scanning, but stop accumulating
+                    } else {
+                        magnitude = magnitude * static_cast<unsigned long long>(base) + static_cast<unsigned long long>(digit);
+                    }
+                }
+            }
+            // A value beyond uint64 cannot be a ZL int either; a decimal that
+            // is far out of int64 range lets the existing range check reject it
+            // with its normal message rather than overflowing silently.
+            text = saturated ? "18446744073709551616" : std::to_string(magnitude);
+            return Token{type, text, startLine, startCol};
+        }
+    }
+
+    while (!isAtEnd()) {
+        const char c = peek();
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            text += advance();
+            continue;
+        }
+        // `_` separates digits (`1_000`, `0xFF_FF`) but is not part of a number
+        // on its own, so a trailing or doubled separator ends the literal.
+        if (c == '_' && std::isdigit(static_cast<unsigned char>(peekNext()))) {
+            advance();
+            continue;
+        }
+        break;
     }
     if (peek() == '.' && std::isdigit(static_cast<unsigned char>(peekNext()))) {
         type = TokenType::FLOAT_LITERAL;
         text += advance(); // consume '.'
-        while (!isAtEnd() && std::isdigit(static_cast<unsigned char>(peek()))) {
-            text += advance();
+        while (!isAtEnd()) {
+            const char c = peek();
+            if (std::isdigit(static_cast<unsigned char>(c))) {
+                text += advance();
+                continue;
+            }
+            if (c == '_' && std::isdigit(static_cast<unsigned char>(peekNext()))) {
+                advance();
+                continue;
+            }
+            break;
         }
+    } else if (peek() == '.' && peekNext() != '.' && !startsIdentifier(peekNext())) {
+        // A trailing dot: `5.` is five, not five followed by a member access.
+        // The `..` guard keeps the exclusive range `0..n` intact.
+        type = TokenType::FLOAT_LITERAL;
+        text += advance();
     }
     // Exponent part, as in `1e5`, `1E+21` or `1.5e-3`. The printer emits this
     // form (`log(1e21)` prints `1e+21`), so refusing to lex it would make the
@@ -278,7 +385,10 @@ std::vector<Token> Lexer::tokenize() {
             case '{': tokens.push_back(makeToken(TokenType::LBRACE, "{", startLine, startCol)); break;
             case '}': tokens.push_back(makeToken(TokenType::RBRACE, "}", startLine, startCol)); break;
             case ',': tokens.push_back(makeToken(TokenType::COMMA, ",", startLine, startCol)); break;
-            case '+': tokens.push_back(makeToken(TokenType::PLUS, "+", startLine, startCol)); break;
+            case '+':
+                if (match('=')) tokens.push_back(makeToken(TokenType::PLUS_EQ, "+=", startLine, startCol));
+                else tokens.push_back(makeToken(TokenType::PLUS, "+", startLine, startCol));
+                break;
             case '-': tokens.push_back(makeToken(TokenType::MINUS, "-", startLine, startCol)); break;
             case '*': tokens.push_back(makeToken(TokenType::STAR, "*", startLine, startCol)); break;
             case '/': tokens.push_back(makeToken(TokenType::SLASH, "/", startLine, startCol)); break;
@@ -291,6 +401,7 @@ std::vector<Token> Lexer::tokenize() {
             case ']': tokens.push_back(makeToken(TokenType::RBRACKET, "]", startLine, startCol)); break;
             case ';': tokens.push_back(makeToken(TokenType::SEMICOLON, ";", startLine, startCol)); break;
             case ':': tokens.push_back(makeToken(TokenType::COLON, ":", startLine, startCol)); break;
+            case '?': tokens.push_back(makeToken(TokenType::QUESTION, "?", startLine, startCol)); break;
             case '@': tokens.push_back(makeToken(TokenType::AT, "@", startLine, startCol)); break;
             case '#':
                 // '#' is the regex literal delimiter. scanRegexLiteral() expects

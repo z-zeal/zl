@@ -251,6 +251,10 @@ bool emitStatements(const AstNode* node, std::ostringstream& out,
         }
         case NodeKind::ForStmt: {
             const auto* f = static_cast<const ForStmt*>(node);
+            if (f->iterable) {
+                error="@native does not yet support list for-in loops";
+                return false;
+            }
             if (locals.count(f->varName)) { error="@native loop variable redeclaration is unsupported: " + f->varName; return false; }
             if (expressionType(f->start.get(), locals) != "std::int64_t" ||
                 expressionType(f->end.get(), locals) != "std::int64_t" ||

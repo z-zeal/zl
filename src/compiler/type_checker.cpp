@@ -873,6 +873,7 @@ void collectFunctionLocals(const AstNode* node, std::unordered_set<std::string>&
         case NodeKind::ForStmt: {
             const auto* n = static_cast<const ForStmt*>(node);
             if (!n->varName.empty()) locals.insert(n->varName);
+            collectFunctionLocals(n->iterable.get(), locals);
             collectFunctionLocals(n->start.get(), locals);
             collectFunctionLocals(n->end.get(), locals);
             collectFunctionLocals(n->step.get(), locals);
@@ -1114,6 +1115,7 @@ bool TypeChecker::checkNamedFunctionConfinementNode(
         }
         case NodeKind::ForStmt: {
             const auto* n = static_cast<const ForStmt*>(node);
+            if (!checkNamedFunctionConfinementNode(n->iterable.get(), owner, locals, reason)) return false;
             if (!checkNamedFunctionConfinementNode(n->start.get(), owner, locals, reason)) return false;
             if (!checkNamedFunctionConfinementNode(n->end.get(), owner, locals, reason)) return false;
             if (!checkNamedFunctionConfinementNode(n->step.get(), owner, locals, reason)) return false;
@@ -2510,6 +2512,11 @@ void TypeChecker::checkFunctionDecl(const FunctionDecl* node) {
     const bool previousLexicallyInsideMain = lexicallyInsideMain_;
     lexicallyInsideMain_ = (node->name == "main");
 
+    // A func/lambda body is its own break/continue scope: a `break` inside a
+    // lambda cannot act on a loop in the enclosing function.
+    const int previousLoopDepth = loopDepth_;
+    loopDepth_ = 0;
+
     bool previousFunctionSuppresses = functionSuppressesDeprecation_;
     if (const Annotation* sw = findAnnotation(node->annotations, "SuppressWarnings")) {
         functionSuppressesDeprecation_ = sw->argument.value_or("") == "deprecation";
@@ -2601,6 +2608,7 @@ void TypeChecker::checkFunctionDecl(const FunctionDecl* node) {
     currentClassName_.clear();
     inConstructor_ = false;
     lexicallyInsideMain_ = previousLexicallyInsideMain;
+    loopDepth_ = previousLoopDepth;
     functionSuppressesDeprecation_ = previousFunctionSuppresses;
     currentFunctionIsStatic_ = previousFunctionIsStatic;
     currentFunctionIsAsync_ = previousFunctionIsAsync;
@@ -2635,8 +2643,21 @@ void TypeChecker::checkStatement(const AstNode* node) {
         case NodeKind::TryStmt:      checkTryStmt(static_cast<const TryStmt*>(node)); return;
         case NodeKind::ThrowStmt:    checkThrowStmt(static_cast<const ThrowStmt*>(node)); return;
         case NodeKind::ExprStmt:     checkExprStmt(static_cast<const ExprStmt*>(node)); return;
-        case NodeKind::BreakStmt:    return; // no type implications
-        case NodeKind::ContinueStmt: return; // no type implications
+        case NodeKind::BreakStmt:
+            // `break` outside a loop used to be silently accepted: the
+            // reference backend just fell through to the next statement, and MIR
+            // lowering stubbed it with a note, so both "ran" code that could not
+            // have meant anything. It is a statement whose only meaning is a
+            // jump, so there must be a loop to jump out of.
+            if (loopDepth_ == 0) {
+                typeError("'break' outside a loop", node->line);
+            }
+            return;
+        case NodeKind::ContinueStmt:
+            if (loopDepth_ == 0) {
+                typeError("'continue' outside a loop", node->line);
+            }
+            return;
         default:
             return; // unknown statement kinds are silently ignored
     }
@@ -3528,33 +3549,66 @@ void TypeChecker::checkReturnStmt(const ReturnStmt* node) {
 
 void TypeChecker::checkForStmt(const ForStmt* node) {
     for (const auto& assigned : collectLambdaCaptureRefs(node, {}).assignedNames) symbols_.invalidate(assigned);
-    ZlType startType = inferExpr(node->start.get());
-    ZlType endType = inferExpr(node->end.get());
-    ZlType stepType = inferExpr(node->step.get());
+    ++loopDepth_;
 
-    if ((startType != ZlType::INT && startType != ZlType::DOUBLE) ||
-        (endType != ZlType::INT && endType != ZlType::DOUBLE) ||
-        (stepType != ZlType::INT && stepType != ZlType::DOUBLE)) {
-        typeError("for-loop range and step must be numbers", node->line);
+    if (node->iterable) {
+        const InferredType collection = inferExpr(node->iterable.get());
+        if (collection.type != ZlType::LIST) {
+            typeError("for-in currently requires a list<T> collection", node->line);
+        }
+
+        TypeAnnotation elementAnnotation;
+        if (collection.className.empty()) {
+            elementAnnotation.name = "unknown";
+        } else {
+            const TypeName collectionName = parseTypeName(collection.className);
+            if (collectionName.name != "list" || collectionName.args.size() != 1) {
+                typeError("for-in currently requires a list<T> collection", node->line);
+            }
+            elementAnnotation = typeAnnotationFromName(collectionName.args.front());
+        }
+        const SymbolTable::VarInfo elementInfo = variableInfo(elementAnnotation);
+
+        symbols_.pushScope();
+        SymbolTable::VarInfo collectionInfo;
+        collectionInfo.type = collection.type;
+        collectionInfo.className = collection.className;
+        collectionInfo.ownership = collection.ownership;
+        node->iterableStorageName = symbols_.defineVar("\x01for_iterable", std::move(collectionInfo)).storageName;
+        node->indexStorageName = symbols_.defineVar("\x01for_index", ZlType::INT, false).storageName;
+        node->storageName = symbols_.defineVar(node->varName, elementInfo).storageName;
+    } else {
+        const ZlType startType = inferExpr(node->start.get());
+        const ZlType endType = inferExpr(node->end.get());
+        const ZlType stepType = inferExpr(node->step.get());
+
+        if ((startType != ZlType::INT && startType != ZlType::DOUBLE) ||
+            (endType != ZlType::INT && endType != ZlType::DOUBLE) ||
+            (stepType != ZlType::INT && stepType != ZlType::DOUBLE)) {
+            typeError("for-loop range and step must be numbers", node->line);
+        }
+        const ZlType loopType = (startType == ZlType::DOUBLE || endType == ZlType::DOUBLE ||
+                                 stepType == ZlType::DOUBLE) ? ZlType::DOUBLE : ZlType::INT;
+        node->isDoubleRange = (loopType == ZlType::DOUBLE);
+        symbols_.pushScope();
+        node->storageName = symbols_.defineVar(node->varName, loopType, /*isConst=*/false).storageName;
     }
-    ZlType loopType = (startType == ZlType::DOUBLE || endType == ZlType::DOUBLE ||
-                       stepType == ZlType::DOUBLE) ? ZlType::DOUBLE : ZlType::INT;
-    symbols_.pushScope();
-    node->storageName = symbols_.defineVar(node->varName, loopType, /*isConst=*/false).storageName;
 
     const OwnershipFlowState incoming = captureOwnershipState();
     if (node->body) {
         checkStatement(node->body.get());
         const OwnershipFlowState bodyExit = captureOwnershipState();
-        // A range can execute zero times, so the body state and incoming state
-        // are both reachable after the loop.
+        // Both range and list loops can execute zero times, so either state may
+        // be observed after the loop.
         restoreOwnershipState(joinOwnershipStates({incoming, bodyExit}));
     }
     symbols_.popScope();
+    --loopDepth_;
 }
 
 void TypeChecker::checkWhileStmt(const WhileStmt* node) {
     for (const auto& assigned : collectLambdaCaptureRefs(node, {}).assignedNames) symbols_.invalidate(assigned);
+    ++loopDepth_;
     if (node->condition) (void)inferExpr(node->condition.get());
     const OwnershipFlowState incoming = captureOwnershipState();
     if (node->body) {
@@ -3564,13 +3618,16 @@ void TypeChecker::checkWhileStmt(const WhileStmt* node) {
         // be observed, so ownership must be conservative.
         restoreOwnershipState(joinOwnershipStates({incoming, bodyExit}));
     }
+    --loopDepth_;
 }
 
 void TypeChecker::checkRepeatStmt(const RepeatStmt* node) {
     for (const auto& assigned : collectLambdaCaptureRefs(node, {}).assignedNames) symbols_.invalidate(assigned);
+    ++loopDepth_;
     // do-while executes the body at least once, then may execute it again.
     if (node->body) checkStatement(node->body.get());
     if (node->condition) (void)inferExpr(node->condition.get());
+    --loopDepth_;
 }
 
 void TypeChecker::checkTryStmt(const TryStmt* node) {
@@ -3910,8 +3967,15 @@ TypeChecker::InferredType TypeChecker::inferMatchExpr(MatchExpr* node) {
                         : ((subjectType == ZlType::UNKNOWN) ||
                            isAssignable(pt.type, subjectType, pt.className, subjectClass) ||
                            isAssignable(subjectType, pt.type, subjectClass, pt.className));
-                    if (!compatible)
-                        typeError("match literal pattern type does not match subject type", pattern.line);
+                    if (!compatible) {
+                        // A desugared `cond ? a : b` has only true/false arms, so
+                        // an incompatible subject can only mean the condition is
+                        // not bool - say that rather than talking about patterns.
+                        typeError(node->isTernarySugar
+                                      ? "'?' requires a bool condition"
+                                      : "match literal pattern type does not match subject type",
+                                  pattern.line);
+                    }
                     if (pattern.literalType == TokenType::BOOL_LITERAL && !pattern.raw.empty()) {
                         if (pattern.raw == "true") matchedTrue = true; else if (pattern.raw == "false") matchedFalse = true;
                     }
@@ -4293,7 +4357,10 @@ TypeChecker::InferredType TypeChecker::inferMatchExpr(MatchExpr* node) {
         else if (armResult.type != result.type || armResult.className != result.className) {
             if (!isAssignable(armResult.type, result.type, armResult.className, result.className) ||
                 !isAssignable(result.type, armResult.type, result.className, armResult.className))
-                typeError("all match arms must produce the same type", arm.line);
+                typeError(node->isTernarySugar
+                              ? "both branches of a '?' expression must produce the same type"
+                              : "all match arms must produce the same type",
+                          arm.line);
         }
         symbols_.popScope();
         typeExits.push_back(symbols_.snapshot());

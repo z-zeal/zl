@@ -62,9 +62,21 @@ are in [docs/changelog.md](docs/changelog.md), and two more closed on 2026-11-24
 exponent literals the printer emits but the lexer refused, and `this` in `main`
 failing at run time instead of at the use.
 
-Still open from that list: `for` is range-only, and the ergonomic syntax the
-guide does not promise (`+=`, `++`, `switch`, ternary, hex/binary/underscore
-literals, unary `+`, a trailing-dot float).
+The remaining suggestions from that audit do not need separate syntax: `++`
+is written as `x += 1`, and `match` already covers switch-style branching. The
+new `for value in list<T>` form iterates a typed native list in order; maps/sets
+remain out of scope. The
+literal spellings and the
+conditional expression are done - hex, binary, `_` separators, unary `+`, a
+trailing dot and `cond ? then : else` closed the same day as exponent notation.
+A null value now prints `null`, not `nil`: `nil` is the runtime type name but not
+a writable literal, so printing it showed text users could not write back.
+`+=` is sugar for `x = x + y` on a plain variable; field and element targets are
+rejected rather than duplicating a sub-expression. `break`/`continue` outside a
+loop is now an error instead of silently falling through (it used to run on both
+backends), tracked by a loop depth that resets per func/lambda body. A double
+range bound (`for i in 0..5.0`) is no longer rejected by MIR verification: the
+checker records the loop's numeric type and lowering uses it for its slots.
 
 ---
 

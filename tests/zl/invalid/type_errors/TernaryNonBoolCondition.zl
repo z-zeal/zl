@@ -1,0 +1,13 @@
+// ============================================================================
+// Regression fixture - invalid/type_errors - TernaryNonBoolCondition
+//
+// `cond ? a : b` desugars into a bool `match`, so a non-bool condition would
+// otherwise be reported as "match literal pattern type does not match subject
+// type" - about a `match` that is not in the source.
+// ============================================================================
+
+class TernaryNonBoolCondition {
+    func main(): void {
+        log(1 ? "a" : "b")
+    }
+}

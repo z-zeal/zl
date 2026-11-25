@@ -45,14 +45,48 @@ std::optional<InfixBinding> infixBinding(TokenType type) {
         case TokenType::SLASH:
         case TokenType::PERCENT: return InfixBinding{100, 101};
         case TokenType::POW:     return InfixBinding{120, 120}; // right-associative
-        case TokenType::ASSIGN:  return InfixBinding{1, 1};     // right-associative
+        case TokenType::ASSIGN:
+        case TokenType::PLUS_EQ: return InfixBinding{1, 1};     // right-associative
         default:                 return std::nullopt;
     }
 }
 
 bool isUnary(TokenType type) {
-    return type == TokenType::MINUS || type == TokenType::NOT || type == TokenType::BIT_NOT;
+    // Unary `+` is the identity. It is accepted here so `+5` parses; the type
+    // checker (`OperatorRules::unaryResult`) still restricts it to int and
+    // double, and both backends lower it to nothing at all.
+    return type == TokenType::PLUS || type == TokenType::MINUS ||
+           type == TokenType::NOT || type == TokenType::BIT_NOT;
 }
+
+// `target += value` becomes `target = target + value`.
+//
+// Only a plain variable name is accepted: the name is a string already, so no AST
+// clone is needed. A field (`x.count += 1`) or an element (`xs[i] += 1`) would
+// need the object/index sub-expression duplicated, and duplicating it changes how
+// many times a getter or index expression runs - so those report a clear error
+// instead of silently doing the wrong thing.
+NodePtr makePlusAssignExpr(const std::string& name, NodePtr value, std::size_t line) {
+    auto identifier = std::make_unique<Identifier>();
+    identifier->name = name;
+    identifier->line = line;
+
+    auto binary = std::make_unique<BinaryExpr>();
+    binary->op = TokenType::PLUS;
+    binary->left = std::move(identifier);
+    binary->right = std::move(value);
+    binary->line = line;
+
+    auto node = std::make_unique<AssignExpr>();
+    node->name = name;
+    node->value = std::move(binary);
+    node->line = line;
+    return node;
+}
+
+// Ternary binds tighter than assignment (`a = c ? b : d` assigns the whole
+// ternary) and looser than every other operator, and it is right-associative.
+constexpr int kTernaryBindingPower = 2;
 
 NodePtr makeBinary(TokenType op, NodePtr left, NodePtr right, std::size_t line) {
     auto node = std::make_unique<BinaryExpr>();
@@ -60,6 +94,38 @@ NodePtr makeBinary(TokenType op, NodePtr left, NodePtr right, std::size_t line) 
     node->left = std::move(left);
     node->right = std::move(right);
     node->line = line;
+    return node;
+}
+
+// `cond ? whenTrue : whenFalse` becomes an exhaustive bool match.
+//
+// Desugaring rather than adding a node keeps one implementation of everything a
+// ternary needs: the subject is evaluated once, exactly one arm runs, both arms
+// must agree on a type (the checker's existing match rule, which is the same
+// rule a ternary has), and bool coverage is already checked. No backend learns
+// anything new.
+NodePtr makeTernaryExpr(NodePtr condition, NodePtr whenTrue, NodePtr whenFalse, std::size_t line) {
+    auto node = std::make_unique<MatchExpr>();
+    node->line = line;
+    node->isTernarySugar = true;
+    node->subject = std::move(condition);
+
+    MatchExpr::Arm trueArm;
+    trueArm.line = line;
+    trueArm.patternKind = MatchExpr::PatternKind::Literal;
+    trueArm.literalType = TokenType::BOOL_LITERAL;
+    trueArm.raw = "true";
+    trueArm.result = std::move(whenTrue);
+
+    MatchExpr::Arm falseArm;
+    falseArm.line = line;
+    falseArm.patternKind = MatchExpr::PatternKind::Literal;
+    falseArm.literalType = TokenType::BOOL_LITERAL;
+    falseArm.raw = "false";
+    falseArm.result = std::move(whenFalse);
+
+    node->arms.push_back(std::move(trueArm));
+    node->arms.push_back(std::move(falseArm));
     return node;
 }
 
@@ -129,6 +195,22 @@ NodePtr ExpressionParser::parsePratt(int minBindingPower) {
     }
 
     while (true) {
+        // Ternary, just above assignment and right-associative. The branches are
+        // parsed at full expression depth; the else branch is parsed at this
+        // level so `a ? b : c ? d : e` groups to the right.
+        if (parser_.check(TokenType::QUESTION) && minBindingPower <= kTernaryBindingPower) {
+            Token question = parser_.advance();
+            NodePtr whenTrue = parseExpression();
+            parser_.expect(TokenType::COLON, "Expected ':' before the alternative of a '?' expression");
+            NodePtr whenFalse = parsePratt(kTernaryBindingPower);
+            left = makeTernaryExpr(std::move(left), std::move(whenTrue), std::move(whenFalse), question.line);
+            if (++parser_.expressionDepth_ > Parser::kMaxExpressionDepth) {
+                parser_.error("expression nesting exceeds the maximum depth of " +
+                              std::to_string(Parser::kMaxExpressionDepth));
+            }
+            continue;
+        }
+
         const TokenType type = parser_.peek().type;
         auto binding = infixBinding(type);
         if (!binding || binding->leftBindingPower < minBindingPower) {
@@ -136,6 +218,19 @@ NodePtr ExpressionParser::parsePratt(int minBindingPower) {
         }
 
         Token op = parser_.advance();
+
+        // `+=` sits at assignment's level and is right-associative, so it shares
+        // the `=` arm: only a plain variable name can be desugared without
+        // duplicating a sub-expression.
+        if (type == TokenType::PLUS_EQ) {
+            if (left->kind != NodeKind::Identifier) {
+                parser_.error("Left side of '+=' must be a variable name");
+            }
+            std::string name = static_cast<Identifier*>(left.get())->name;
+            NodePtr value = parsePratt(binding->rightBindingPower);
+            left = makePlusAssignExpr(name, std::move(value), op.line);
+            continue;
+        }
 
         if (type == TokenType::ASSIGN) {
             std::string name;

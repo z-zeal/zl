@@ -1,0 +1,14 @@
+// ============================================================================
+// Regression fixture - invalid/type_errors - UnaryPlusNonNumeric
+//
+// Unary `+` is the identity on a number, so it must not be accepted on anything
+// else. `OperatorRules::unaryResult` already restricted it to int and double;
+// only the parser refused to build the node, which is why `+"abc"` reported a
+// syntax error rather than this type error.
+// ============================================================================
+
+class UnaryPlusNonNumeric {
+    func main(): void {
+        log(+"abc")
+    }
+}

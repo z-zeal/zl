@@ -1,0 +1,13 @@
+// ============================================================================
+// Regression fixture - invalid/type_errors - PlusAssignTypeMismatch
+//
+// `x += y` is `x = x + y`, so the widened value still has to fit the variable's
+// declared type. The error is the ordinary assignment one.
+// ============================================================================
+
+class PlusAssignTypeMismatch {
+    func main(): void {
+        int n = 3
+        n += 1.5
+    }
+}

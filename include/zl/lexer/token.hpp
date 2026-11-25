@@ -86,6 +86,7 @@ namespace zl {
         RBRACKET,         // ]
         SEMICOLON,        // ;
         COLON,            // :
+        QUESTION,         // ?  (the `cond ? then : else` expression)
         COMMA,            // ,
         DOT,              // .
         DOT_DOT,          // ..
@@ -110,6 +111,7 @@ namespace zl {
 
         // Operators - assignment
         ASSIGN,           // =
+        PLUS_EQ,          // +=  (sugar for `target = target + value`)
         FAT_ARROW,        // =>  (lambda expression bodies only, e.g. func(x) => x * x)
 
         // Operators - comparison

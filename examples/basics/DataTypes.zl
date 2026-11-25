@@ -38,6 +38,14 @@ class DataTypes {
         log(1.5e3)
         log(.5e2)
         log(1e-07)
+
+        // Hexadecimal, binary and `_` separators are integers like any other,
+        // and unary `+` and a trailing dot are accepted spellings.
+        log(0x1F)
+        log(0b101)
+        log(1_000)
+        log(+42)
+        log(5.)
     }
 }
 
@@ -55,4 +63,9 @@ class DataTypes {
 // 1500
 // 50
 // 1e-07
+// 31
+// 5
+// 1000
+// 42
+// 5
 // --- End expected output ---

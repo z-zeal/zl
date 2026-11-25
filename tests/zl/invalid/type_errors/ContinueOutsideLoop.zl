@@ -1,0 +1,12 @@
+// ============================================================================
+// Regression fixture - invalid/type_errors - ContinueOutsideLoop
+//
+// `continue` outside a loop used to be silently accepted on both backends; it
+// has no meaning without a loop to advance.
+// ============================================================================
+
+class ContinueOutsideLoop {
+    func main(): void {
+        continue
+    }
+}

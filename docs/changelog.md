@@ -1,5 +1,168 @@
 # Development Checkpoints
 
+## 2026-11-22 - iterate a native list with `for value in values`
+
+`for` previously accepted only a numeric range. It now also accepts a typed
+native `list<T>` and binds each element to the loop variable:
+
+```zl
+for value in values {
+    log(value)
+}
+```
+
+The collection expression runs exactly once, and the initial list length is
+captured before iteration. Element types flow into the body; `break` and
+`continue` use the same loop machinery as range loops. Other collection kinds
+(maps, sets, and the `List<T>` wrapper class) are intentionally not supported by
+this first form. The reflection guide and the native-list example now use it.
+
+Gates: `ForInList.zl` and `ForInNonList.zl` pass on both AST and MIR paths;
+examples 52/52, default regressions 117/117, ctest 44/44, and native gate PASS.
+The full AST regression sweep reports one failure in the unrelated
+`IncompleteStubRefusal` case; the other 116 cases pass.
+
+## 2026-11-24 - a double range bound works on MIR too
+
+`for i in 0..5.0` (and a fractional `step`) is a double range: the checker
+computes the loop type from start/end/step, so the loop variable is a `double`
+and the reference backend happily runs `0, 1, 2, 3, 4`. MIR lowering hardcoded
+`int` for the generated counter, end and step slots, so the double stores failed
+verification and the program was rejected with
+`store of double into slot ... of type int`.
+
+The checker now records its decision on the node (`ForStmt::isDoubleRange`) and
+lowering types every generated operand with it. An integer range is unchanged.
+
+Gates: `tests/zl/valid/language_hardening_tests/DoubleRangeLoop.zl`; examples
+52/52, regressions 115/115, ctest 44/44, native gate PASS.
+
+## 2026-11-24 - `break`/`continue` outside a loop is an error
+
+Both keywords were silently accepted anywhere. The reference backend just fell
+through to the next statement, so `break` at the top level ran the rest of the
+func; MIR lowering printed a note and stubbed it, leaving bytecode that "ran"
+the same way. Neither could have meant anything: a break is only a jump out of
+an enclosing loop, and there was none.
+
+The checker now tracks loop depth (saved and restored around every func/lambda
+body, so a nested function's `break` cannot act on a loop in the enclosing one)
+and reports `'break' outside a loop` / `'continue' outside a loop`. This is the
+first of the two accepted-but-meaningless statements from the audit; the other,
+`var x = <void call>()`, was fixed earlier.
+
+Gates: `tests/zl/invalid/type_errors/BreakOutsideLoop.zl`,
+`tests/zl/invalid/type_errors/ContinueOutsideLoop.zl`; examples 52/52,
+regressions 114/114, ctest 44/44, native gate PASS.
+
+## 2026-11-24 - compound assignment: `x += y`
+
+`+=` was a syntax error. It is sugar for `x = x + y`, so it inherits the
+checker's existing assignment rules rather than duplicating them: the variable
+must exist, must not be const, and the widened value must still fit its declared
+type (`n += 1.5` on an `int` gives the ordinary `cannot assign double to variable
+'n' of type int`). It binds where `=` does and yields the assigned value, so
+`(n += 1)` can be used in an expression.
+
+**Only a plain variable name is a target.** A field (`x.count += 1`) or an element
+(`xs[i] += 1`) would need its object/index sub-expression duplicated in the
+desugaring, which changes how many times that expression runs - so those are a
+clear parse error instead of silently evaluating twice. Duplicating AST nodes for
+them would need a general expression cloner, which does not exist yet; it is
+cheaper to reject now and widen later than to get the count wrong.
+
+Gates: `tests/zl/valid/language_hardening_tests/PlusAssignment.zl`,
+`tests/zl/invalid/type_errors/PlusAssignNonVariable.zl`,
+`tests/zl/invalid/type_errors/PlusAssignTypeMismatch.zl`; `examples/basics/Loops.zl`
+now uses the spelling.
+
+## 2026-11-24 - a null value prints as `null`, not `nil`
+
+Found while wiring up the ternary: `log(null)` printed `nil`. `nil` is the name
+the *runtime* uses for the null type (`typeKind`, `typeName`, MIR's own printer),
+but it is not a literal the language accepts - `string s = nil` does not compile.
+So printing a null showed users text they could not write back, and a function
+returning null produced output that looked like a different thing than writing
+`null` in the source.
+
+The value printer now uses the source spelling. Runtime type names are unchanged:
+`typeKind(null)` still reports `nil`, because that is an API answer, not source.
+
+Gates: `tests/zl/valid/language_hardening_tests/NullLiteralSpelling.zl` added;
+examples 52/52, regressions 109/109, ctest 44/44, native gate PASS.
+
+## 2026-11-24 - the conditional expression: `cond ? then : else`
+
+`?` was not a token at all, so a ternary was a syntax error
+(`Expected ')' after log argument -- got "?"`). It is now an expression that
+yields a value, evaluates its condition once, runs exactly one branch, and
+chains to the right:
+
+```zl
+log(n == 1 ? "one" : n == 2 ? "two" : "many")
+```
+
+**It desugars into `match`.** `c ? a : b` becomes `match c { true => a false => b }`,
+so there is no new node and nothing new for either backend to lower: bool
+coverage, "both arms must produce the same type", and single evaluation all come
+from the match that already existed. Precedence follows from where it is parsed -
+tighter than assignment (`int x = c ? 1 : 2` assigns the whole ternary) and looser
+than arithmetic and comparison.
+
+Because the source says `?` and not `match`, the two diagnostics name the
+construct the user wrote: a non-bool condition reports `'?' requires a bool
+condition` rather than the match wording about literal patterns, and differing
+branches report `both branches of a '?' expression must produce the same type`.
+`MatchExpr::isTernarySugar` carries that distinction to the checker.
+
+Gates: `tests/zl/valid/language_hardening_tests/TernaryExpression.zl`,
+`tests/zl/invalid/type_errors/TernaryNonBoolCondition.zl`,
+`tests/zl/invalid/type_errors/TernaryBranchMismatch.zl`, and
+`examples/basics/Conditions.zl` extended.
+
+## 2026-11-24 - hex, binary, `_` separators, unary `+`, and a trailing dot
+
+More of the audit's leftover list: spellings users expect that the lexer
+refused outright.
+
+**Hexadecimal and binary integers.** `0x1F` lexed as the integer `0` followed by
+the identifier `x1F`, and `0b101` the same way, so both were syntax errors. The
+lexer now resolves these prefixes - and strips `_` digit separators - into the
+equivalent plain **decimal digits**. That representation is deliberate:
+`Literal::raw` is parsed as base 10 at a dozen sites (`std::stoll`/`std::stod`
+in the compiler, pattern keys, array sizes, the IR optimizer's constant fold,
+and the native emitter), so rewriting it once at the source keeps all of them
+correct rather than teaching each one about prefixes. A value wider than uint64
+saturates to a decimal far outside int64, so the existing range check rejects it
+with its normal message instead of overflowing silently.
+
+`-0x8000000000000000` works too: it resolves to the decimal magnitude that the
+INT64_MIN fold already recognises, so the most-negative int64 is writable in hex
+and binary exactly as it is in decimal.
+
+**`_` separators**, in decimal, hex and binary (`1_000`, `0xFF_FF`,
+`0b1010_1010`), including inside a float (`1_0.5`). A separator must be followed
+by a digit, so a stray `1_` ends the literal rather than vanishing.
+
+**Unary `+`.** The parser did not treat `+` as a prefix operator, so `+5` was a
+syntax error even though `OperatorRules::unaryResult` already accepted it and
+the MIR lowering already implemented it as the identity. It is now accepted, and
+both backends emit nothing for it; the reference emitter needed the matching
+identity case or it would have thrown on an operator it had just been handed.
+The checker still restricts it to `int` and `double`, so `+"abc"` remains an
+error - now the right one (`unary '+' requires a numeric operand`) instead of a
+syntax error.
+
+**A trailing dot** (`5.` is five) was refused because `.` only continued a number
+when a digit followed. It is now taken unless the next character could continue
+a name, and never when it is another `.`, which is what keeps the exclusive
+range `0..n` working. That last guard matters: without it every range in the
+language would have lexed as a float followed by a member access.
+
+Gates: `tests/zl/valid/language_hardening_tests/IntegerLiteralForms.zl`,
+`tests/zl/invalid/type_errors/UnaryPlusNonNumeric.zl`, and
+`examples/basics/DataTypes.zl` extended with the new spellings.
+
 ## 2026-11-24 - exponent literals, and a refusal that names the rule for `this` in `main`
 
 Two entries from the November audit's leftover list, both cases where a program
