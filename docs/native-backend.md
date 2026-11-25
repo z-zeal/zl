@@ -403,9 +403,9 @@ lower real ZL source through the real front end.
 ## What is deliberately missing
 
 Named so that no one has to discover them by reading the code: register
-allocation, stack argument passing, a GC map and safepoints (planned in
-[native-gc-map.md](native-gc-map.md); carrying a reference landed first, so the
-map is advisory until the tier can allocate), unwind tables
+allocation, stack argument passing, runtime participation in safepoints and
+collection from native frames (the frame layout and conservative call-site maps
+are exported but advisory; see [native-gc-map.md](native-gc-map.md)), unwind tables
 (hence an arithmetic fault in natively executed code is a SIGILL trap, not a
 catchable `ArithmeticError` — the VM remains the tier where those are
 catchable), object layout and field access, string and collection operations,

@@ -20,6 +20,8 @@
 #include "zl/native/pipeline.hpp"
 
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
@@ -411,8 +413,9 @@ Module buildRefCaller() {
     caller.setReturnType(stringType);
     const auto entry = caller.addBlock();
     caller.setCurrentBlock(entry);
-    const auto call = caller.emitCall(calleeId, {caller.parameterOperand(s)}, stringType);
-    caller.emitReturn(Operand::temp(call, stringType));
+    const auto first = caller.emitCall(calleeId, {caller.parameterOperand(s)}, stringType);
+    const auto second = caller.emitCall(calleeId, {Operand::temp(first, stringType)}, stringType);
+    caller.emitReturn(Operand::temp(second, stringType));
     return builder.take();
 }
 
@@ -884,6 +887,114 @@ void testArithmeticTraps() {
 }
 #endif
 
+// The exported frame layout must agree with the displacement encoded for
+// each LIR frame slot. The reference fixture produces a concrete slot read
+// and write, so checking both directions pins the metadata to the machine code.
+bool hasRbpAccess(const std::vector<std::uint8_t>& code, std::uint8_t opcode,
+                  std::int32_t displacement) {
+    for (std::size_t i = 0; i + 7 <= code.size(); ++i) {
+        if ((code[i] != 0x48 && code[i] != 0x4c) || code[i + 1] != opcode) continue;
+        const std::uint8_t modrm = code[i + 2];
+        if ((modrm & 0xc7) != 0x85) continue; // [rbp + disp32]
+        std::int32_t encoded = 0;
+        std::memcpy(&encoded, code.data() + i + 3, sizeof(encoded));
+        if (encoded == displacement) return true;
+    }
+    return false;
+}
+
+void testEmittedFrameMap() {
+    auto result = compile(buildRefSlot());
+    require(result.ok(), "the reference-slot fixture compiles: " + result.error);
+    if (!result.ok() || result.lir.functions.empty() || result.code.empty()) return;
+
+    const auto& lir = result.lir.functions.front();
+    const auto& emitted = result.code.front();
+    require(emitted.name == lir.name, "emitted frame map belongs to the matching function");
+    require(emitted.frameLocations.size() == (lir.slots.size() - 1) + (lir.vregs.size() - 1),
+            "every LIR slot and vreg spill is exported exactly once");
+
+    bool checkedReference = false;
+    for (std::size_t i = 1; i < lir.slots.size(); ++i) {
+        const auto& sourceSlot = lir.slots[i];
+        const EmittedFrameLocation* layout = nullptr;
+        for (const auto& candidate : emitted.frameLocations)
+            if (candidate.kind == EmittedFrameLocationKind::FrameSlot &&
+                candidate.id == sourceSlot.id) layout = &candidate;
+        require(layout != nullptr, "frame map contains slot " + std::to_string(sourceSlot.id));
+        if (layout == nullptr) continue;
+        require(layout->isReference == sourceSlot.isReference,
+                "frame-map reference bit matches LIR slot " + std::to_string(sourceSlot.id));
+        require(layout->offset < 0 && layout->offset >= -static_cast<std::int32_t>(emitted.frameSize),
+                "frame slot offset is inside the emitted frame");
+        if (!sourceSlot.isReference) continue;
+        checkedReference = true;
+        require(hasRbpAccess(emitted.code, 0x89, layout->offset),
+                "reference slot Store uses its exported frame offset");
+        require(hasRbpAccess(emitted.code, 0x8b, layout->offset),
+                "reference slot Load uses its exported frame offset");
+    }
+    require(checkedReference, "fixture has a reference frame slot to map");
+
+    bool checkedReferenceSpill = false;
+    for (std::size_t i = 1; i < lir.vregs.size(); ++i) {
+        const auto& sourceVReg = lir.vregs[i];
+        const EmittedFrameLocation* layout = nullptr;
+        for (const auto& candidate : emitted.frameLocations)
+            if (candidate.kind == EmittedFrameLocationKind::VirtualRegister &&
+                candidate.id == sourceVReg.id) layout = &candidate;
+        require(layout != nullptr, "frame map contains vreg spill " + std::to_string(sourceVReg.id));
+        if (layout == nullptr) continue;
+        const bool isReference = sourceVReg.cls == ValueClass::Reference;
+        require(layout->isReference == isReference,
+                "frame-map reference bit matches vreg " + std::to_string(sourceVReg.id));
+        require(layout->offset < 0 && layout->offset >= -static_cast<std::int32_t>(emitted.frameSize),
+                "vreg spill offset is inside the emitted frame");
+        if (!isReference) continue;
+        checkedReferenceSpill = true;
+        require(hasRbpAccess(emitted.code, 0x89, layout->offset) ||
+                    hasRbpAccess(emitted.code, 0x8b, layout->offset),
+                "reference vreg spill offset appears in emitted memory accesses");
+    }
+    require(checkedReferenceSpill, "fixture has reference vreg spills to map");
+
+    auto calls = compile(buildRefCaller());
+    require(calls.ok(), "the multi-call fixture compiles: " + calls.error);
+    if (!calls.ok()) return;
+    const EmittedFunction* wrap = nullptr;
+    for (const auto& function : calls.code)
+        if (function.name == "wrap") wrap = &function;
+    require(wrap != nullptr, "the call-map fixture emits wrap");
+    if (wrap == nullptr) return;
+
+    std::vector<std::int32_t> expectedRoots;
+    for (const auto& location : wrap->frameLocations)
+        if (location.isReference) expectedRoots.push_back(location.offset);
+    require(!expectedRoots.empty(), "the call-map fixture spills managed references");
+    require(wrap->safepoints.size() == 2, "both calls have distinct safepoint maps");
+
+    for (std::size_t i = 0; i < wrap->safepoints.size(); ++i) {
+        const auto& map = wrap->safepoints[i];
+        require(map.callOffset < wrap->code.size() && wrap->code[map.callOffset] == 0xe8,
+                "safepoint is keyed by the byte offset of its CALL opcode");
+        if (i > 0)
+            require(wrap->safepoints[i - 1].callOffset != map.callOffset,
+                    "each call site has its own offset key");
+        bool relocationMatches = false;
+        for (const auto& relocation : wrap->relocations)
+            if (relocation.offset == map.callOffset + 1) relocationMatches = true;
+        require(relocationMatches, "call-site map offset agrees with its relocation");
+        require(map.referenceOffsets.size() == expectedRoots.size(),
+                "conservative map reports every reference-bearing frame location");
+        for (const auto root : expectedRoots) {
+            bool found = false;
+            for (const auto offset : map.referenceOffsets)
+                if (offset == root) found = true;
+            require(found, "conservative map retains every possible managed root");
+        }
+    }
+}
+
 // --- the real front end ----------------------------------------------------
 //
 // The pipeline test that matters: real ZL source, the real lowerer, the real
@@ -968,6 +1079,7 @@ int main() {
     testTargetDescription();
     testValueClasses();
     testSelectionSubset();
+    testEmittedFrameMap();
 #if ZL_NATIVE_CAN_EXECUTE
     // Defined in the guarded region above with its execution fixtures, so the
     // call has to be guarded too: unguarded, a platform without executable

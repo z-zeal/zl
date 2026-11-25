@@ -32,10 +32,31 @@
 
 namespace zl::native {
 
+enum class EmittedFrameLocationKind : std::uint8_t { FrameSlot, VirtualRegister };
+
+struct EmittedFrameLocation {
+    EmittedFrameLocationKind kind{EmittedFrameLocationKind::FrameSlot};
+    std::uint32_t id{0};
+    std::int32_t offset{0}; // negative displacement from rbp
+    bool isReference{false};
+};
+
+struct SafepointMap {
+    // Byte offset of the CALL opcode itself (not its relocation field).
+    std::size_t callOffset{0};
+    // Conservative roots: every reference-bearing location in this frame.
+    std::vector<std::int32_t> referenceOffsets;
+};
+
 struct EmittedFunction {
     std::string name;
     std::vector<std::uint8_t> code;
     std::size_t frameSize{0};
+    // Target-specific layout for all LIR slots and vreg spill slots. Keeping
+    // both kinds explicit lets safepoint maps describe every root location.
+    std::vector<EmittedFrameLocation> frameLocations;
+    // One conservative map per emitted call instruction, keyed by code offset.
+    std::vector<SafepointMap> safepoints;
     std::size_t parameterCount{0};
     ValueClass returnClass{ValueClass::Void};
     // Byte offsets of call sites that need a symbol bound before execution,
