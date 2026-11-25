@@ -1,5 +1,14 @@
 # Development Checkpoints
 
+## 2026-11-22 - add a LeetCode-style algorithm harness
+
+A standalone `Solution` class and deterministic harness now exercise six
+representative patterns: Two Sum, Binary Search, Maximum Subarray, Valid
+Parentheses, merging sorted arrays, and Climbing Stairs. The harness runs through
+both AST/reference and MIR compiler paths. `docs/leetcode-style.md` explains
+what the smoke test covers and what a real judge adapter still needs. The fixture passes on both compiler paths;
+regressions 124/124, CTest 44/44, and the native gate pass.
+
 ## 2026-11-22 - make List sorting stable and O(n log n)
 
 `List.sort` now uses a bottom-up stable merge sort with O(n) temporary storage,
