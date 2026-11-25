@@ -1,0 +1,173 @@
+// Regression fixture - valid/language_hardening_tests - LeetCodeStyleHarness
+// A small function-based judge harness around familiar Solution methods.
+class Solution {
+    public func twoSum(List<int> nums, int target): List<int> {
+        var previousIndex = new Map<int, int>()
+        var result = new List<int>()
+        for i in 0..nums.length() {
+            int complement = target - nums.get(i)
+            if (previousIndex.has(complement)) {
+                result.push(previousIndex.get(complement))
+                result.push(i)
+                return result
+            }
+            previousIndex.put(nums.get(i), i)
+        }
+        return result
+    }
+
+    public func search(List<int> nums, int target): int {
+        int low = 0
+        int high = nums.length() - 1
+        while (low <= high) {
+            int middle = low + (high - low) / 2
+            int current = nums.get(middle)
+            if (current == target) {
+                return middle
+            }
+            if (current < target) {
+                low = middle + 1
+            } else {
+                high = middle - 1
+            }
+        }
+        return -1
+    }
+
+    public func maxSubArray(List<int> nums): int {
+        int best = nums.get(0)
+        int endingHere = best
+        for i in 1..nums.length() {
+            int value = nums.get(i)
+            if (endingHere < 0) {
+                endingHere = value
+            } else {
+                endingHere = endingHere + value
+            }
+            if (best < endingHere) {
+                best = endingHere
+            }
+        }
+        return best
+    }
+
+    public func isValid(string text): bool {
+        var stack = new List<string>()
+        for i in 0..String.length(text) {
+            string current = String.substring(text, i, i + 1)
+            if (current == "(" || current == "[" || current == "{") {
+                stack.push(current)
+            } else {
+                if (stack.isEmpty()) {
+                    return false
+                }
+                string opening = stack.pop()
+                if ((current == ")" && opening != "(") ||
+                    (current == "]" && opening != "[") ||
+                    (current == "}" && opening != "{")) {
+                    return false
+                }
+            }
+        }
+        return stack.isEmpty()
+    }
+
+    public func mergeSorted(List<int> left, List<int> right): List<int> {
+        var merged = new List<int>()
+        int i = 0
+        int j = 0
+        while (i < left.length() && j < right.length()) {
+            if (left.get(i) <= right.get(j)) {
+                merged.push(left.get(i))
+                i = i + 1
+            } else {
+                merged.push(right.get(j))
+                j = j + 1
+            }
+        }
+        while (i < left.length()) {
+            merged.push(left.get(i))
+            i = i + 1
+        }
+        while (j < right.length()) {
+            merged.push(right.get(j))
+            j = j + 1
+        }
+        return merged
+    }
+
+    public func climbStairs(int n): int {
+        if (n <= 2) { return n }
+        int oneBefore = 2
+        int twoBefore = 1
+        for i in 3..n + 1 {
+            int current = oneBefore + twoBefore
+            twoBefore = oneBefore
+            oneBefore = current
+        }
+        return oneBefore
+    }
+}
+
+class LeetCodeStyleHarness {
+    static func check(bool condition, string message): void {
+        if (!condition) {
+            throw new Exception("LeetCode-style harness: " + message)
+        }
+    }
+
+    func main(): void {
+        var solution = new Solution()
+
+        var numbers = new List<int>()
+        numbers.push(2)
+        numbers.push(7)
+        numbers.push(11)
+        numbers.push(15)
+        var pair = solution.twoSum(numbers, 9)
+        LeetCodeStyleHarness.check(pair.length() == 2 && pair.get(0) == 0 && pair.get(1) == 1,
+                                   "Two Sum")
+
+        var sorted = new List<int>()
+        sorted.push(-1)
+        sorted.push(0)
+        sorted.push(3)
+        sorted.push(5)
+        sorted.push(9)
+        sorted.push(12)
+        LeetCodeStyleHarness.check(solution.search(sorted, 9) == 4 && solution.search(sorted, 2) == -1,
+                                   "Binary Search")
+
+        var subarray = new List<int>()
+        subarray.push(-2)
+        subarray.push(1)
+        subarray.push(-3)
+        subarray.push(4)
+        subarray.push(-1)
+        subarray.push(2)
+        subarray.push(1)
+        subarray.push(-5)
+        subarray.push(4)
+        LeetCodeStyleHarness.check(solution.maxSubArray(subarray) == 6, "Maximum Subarray")
+
+        LeetCodeStyleHarness.check(solution.isValid("{[]}"), "Valid Parentheses accepts nesting")
+        LeetCodeStyleHarness.check(!solution.isValid("([)]"), "Valid Parentheses rejects crossed pairs")
+
+        var left = new List<int>()
+        left.push(1)
+        left.push(2)
+        left.push(4)
+        var right = new List<int>()
+        right.push(1)
+        right.push(3)
+        right.push(4)
+        var merged = solution.mergeSorted(left, right)
+        LeetCodeStyleHarness.check(merged.length() == 6 && merged.get(0) == 1 &&
+                                   merged.get(1) == 1 && merged.get(2) == 2 &&
+                                   merged.get(3) == 3 && merged.get(4) == 4 &&
+                                   merged.get(5) == 4, "Merge Two Sorted Arrays")
+
+        LeetCodeStyleHarness.check(solution.climbStairs(5) == 8, "Climbing Stairs")
+        log("ok")
+    }
+}

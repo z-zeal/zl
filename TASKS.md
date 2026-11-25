@@ -169,6 +169,12 @@ confirmed already fixed on 2026-09-17; see [Done](#done) and
 Most recent first. Kept briefly so the gates that cover each fix are findable,
 then deleted - [docs/changelog.md](docs/changelog.md) is the permanent record.
 
+- [x] **LeetCode-style algorithm smoke harness** (2026-11-22) - a `Solution`
+  class and deterministic input/output harness cover Two Sum, Binary Search,
+  Maximum Subarray, Valid Parentheses, merging sorted arrays, and Climbing Stairs.
+  Runs on both compiler paths. Gates: regressions 124/124, CTest 44/44, native
+  gate PASS; details in [docs/leetcode-style.md](docs/leetcode-style.md).
+
 - [x] **List sort scalability** (2026-11-22) - replaced quadratic stable insertion
   sort with stable bottom-up merge sort. `ListSort.zl` checks 4,096 reverse-sorted
   integers, stable ordering for equal keys, and empty/singleton inputs on both

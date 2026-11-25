@@ -171,6 +171,7 @@ Full syntax and semantics: **[docs/language-guide.md](docs/language-guide.md)**.
 | Document | Covers |
 | --- | --- |
 | [docs/language-guide.md](docs/language-guide.md) | Types, lambdas, generics, records, operators, reflection |
+| [docs/leetcode-style.md](docs/leetcode-style.md) | A six-problem algorithm smoke test and judge-adaptation notes |
 | [docs/stdlib.md](docs/stdlib.md) | `zl.lang`, `Math`, `zl.test`, `zl.logging`, `zl.text`, `zl.serialize`, `zl.time`, `zl.crypto` |
 | [docs/packages.md](docs/packages.md) | Imports, the stdlib root, and `zlpkg` dependency management |
 | [docs/native.md](docs/native.md) | Native boundary, `@native` compilation, `zl-bind`, FFI, async |
