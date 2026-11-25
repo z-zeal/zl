@@ -5,8 +5,9 @@
 Alongside the arithmetic forms (`+=`, `-=`, `*=`, `/=`, `%=`), plain variables
 now support bitwise and shift compound assignments (`&=`, `|=`, `^=`, `<<=`,
 `>>=`, `>>>=`). Each desugars to its corresponding binary operation and
-assignment, so existing operator and type rules apply. Field and index targets
-remain rejected rather than duplicating their receiver/index expressions.
+assignment, so existing operator and type rules apply. Field targets use a
+dedicated evaluate-once lowering, including static fields and overloaded
+operators; indexed assignment is still unsupported.
 
 `CompoundAssignment.zl` covers all operators, including right-associative
 nesting; invalid fixtures cover a non-variable target and type mismatch. Both

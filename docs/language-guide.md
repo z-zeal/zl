@@ -51,10 +51,10 @@ This is enforced by the compiler pipeline. Errors are reported in three categori
 **An explicit type comes BEFORE the name, Java-style:** `Animal a = new Dog(...)`,
 `int total = 0`. The annotation-after-colon spelling `var x: int` is a syntax error.
 
-**Compound assignment** is supported on plain variables: `+=`, `-=`, `*=`, `/=`,
+**Compound assignment** is supported on plain variables and fields: `+=`, `-=`, `*=`, `/=`,
 `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`, and `>>>=` use the same operator and type
-checks as `x = x op value`. Field and index targets are rejected for now, so a
-receiver or index expression is never evaluated twice by hidden desugaring.
+checks as `x = x op value`. Field targets are supported with their receiver
+evaluated once; indexed assignment is not supported by the language yet.
 
 ```zl
 int count = 10

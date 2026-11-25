@@ -1538,6 +1538,56 @@ struct FunctionLowerer {
 
     [[nodiscard]] Operand fieldAssign(const zl::FieldAssignExpr& node) {
         const SourceLocation loc = location(&node);
+        if (node.compoundOp != zl::TokenType::UNKNOWN) {
+            const TypeId resultType = typeOfNode(&node);
+            TypeId fieldType = ctx.builder.types().unknownType();
+            Operand previous = Operand::none();
+            Operand base = Operand::none();
+            if (node.isStaticFieldAssign) {
+                for (const auto& field : ctx.builder.module().statics) {
+                    if (field.className == node.staticFieldClassName && field.name == node.fieldName) {
+                        fieldType = field.type;
+                        break;
+                    }
+                }
+                previous = Operand::temp(fb.emitStaticLoad(node.staticFieldClassName, node.fieldName,
+                                                            fieldType, loc), fieldType);
+            } else {
+                base = expression(node.object.get());
+                if (base.isNone()) return Operand::none();
+                fieldType = fieldTypeOf(base.type, node.fieldName);
+                previous = Operand::temp(fb.emitFieldLoad(base, node.fieldName, fieldType, loc), fieldType);
+            }
+            Operand rhs = expression(node.value.get());
+            if (rhs.isNone()) return Operand::none();
+            Operand result = Operand::none();
+            if (node.isOperatorOverload) {
+                const Type* receiverType = ctx.builder.types().find(previous.type);
+                const std::string receiverClass = operandTypeName(previous);
+                if (receiverClass.empty()) {
+                    unsupported(&node, "overloaded compound operator on a receiver whose class could not be resolved");
+                    return Operand::none();
+                }
+                result = Operand::temp(fb.emitInvokeMethod(previous, receiverClass,
+                                                           node.resolvedOperatorDispatch.name, {rhs},
+                                                           resultType, loc,
+                                                           receiverType ? receiverType->arguments
+                                                                        : std::vector<TypeId>{}),
+                                       resultType);
+            } else {
+                result = Operand::temp(fb.emitBinary(binaryOpcode(node.compoundOp), previous, rhs,
+                                                     resultType, loc), resultType);
+            }
+            result = coerce(result, fieldType, loc);
+            if (result.isNone()) return Operand::none();
+            if (node.isStaticFieldAssign) {
+                fb.emitStaticStore(node.staticFieldClassName, node.fieldName, result, loc);
+            } else {
+                fb.emitFieldStore(base, node.fieldName, result, loc);
+            }
+            return result;
+        }
+
         Operand value = expression(node.value.get());
         if (value.isNone()) return Operand::none();
         if (node.isStaticFieldAssign) {

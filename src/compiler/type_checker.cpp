@@ -5926,6 +5926,50 @@ TypeChecker::InferredType TypeChecker::inferFieldAccess(const FieldAccessExpr* n
 }
 
 TypeChecker::InferredType TypeChecker::inferFieldAssign(const FieldAssignExpr* node) {
+    const auto compoundResult = [&](ZlType fieldType, const std::string& fieldClass,
+                                    const InferredType& rhs) -> InferredType {
+        if (node->compoundOp == TokenType::UNKNOWN) return rhs;
+        const Operator op = operatorFromToken(node->compoundOp);
+        InferredType result;
+        if (fieldType == ZlType::OBJECT && !fieldClass.empty()) {
+            const std::string methodName = OperatorRules::methodName(op);
+            std::vector<std::pair<std::string, ClassMethodInfo>> candidates;
+            if (semanticModel_.hasInterface(fieldClass)) {
+                semanticModel_.resolveInterfaceMethods(fieldClass);
+                const auto* iface = semanticModel_.findInterface(fieldClass);
+                if (iface != nullptr) {
+                    auto methodIt = iface->methods.find(methodName);
+                    if (methodIt != iface->methods.end()) candidates.emplace_back(fieldClass, methodIt->second);
+                }
+            } else {
+                candidates = semanticModel_.collectMethodOverloads(fieldClass, methodName);
+            }
+            if (!candidates.empty()) {
+                std::string owner;
+                const ClassMethodInfo* method = resolveOverload(candidates, {rhs.type}, {rhs.className},
+                                                                methodName, node->line, &owner);
+                checkAccess(owner, methodName, method->access, /*isMethod=*/true, node->line);
+                node->isOperatorOverload = true;
+                node->resolvedOperatorDispatch = dispatchSignature(methodName, *method);
+                result = InferredType(method->returnType, method->returnClassName);
+            } else {
+                const auto resultType = OperatorRules::binaryResult(op, fieldType, rhs.type);
+                if (!resultType) typeError("class '" + fieldClass + "' has no operator '" + methodName + "'", node->line);
+                result = InferredType(*resultType);
+            }
+        } else {
+            const auto resultType = OperatorRules::binaryResult(op, fieldType, rhs.type);
+            if (!resultType) typeError(OperatorRules::binaryError(op), node->line);
+            result = InferredType(*resultType);
+        }
+        if (!isAssignable(result.type, fieldType, result.className, fieldClass)) {
+            typeError("compound assignment result of type " + zlTypeName(result.type) +
+                      " cannot be assigned back to field '" + node->fieldName +
+                      "' of type " + zlTypeName(fieldType), node->line);
+        }
+        return result;
+    };
+
     if (node->object->kind == NodeKind::Identifier) {
         const auto* idNode = static_cast<const Identifier*>(node->object.get());
         if (!symbols_.lookupVar(idNode->name)) {
@@ -5935,13 +5979,14 @@ TypeChecker::InferredType TypeChecker::inferFieldAssign(const FieldAssignExpr* n
                 const ClassFieldInfo* field = semanticModel_.findFieldInHierarchy(idNode->name, node->fieldName, &staticOwner);
                 if (field && field->isStatic) {
                     const auto valueResult = inferExpr(node->value.get());
-                    if (!isAssignable(valueResult.type, field->type, valueResult.className, field->className)) {
-                        typeError("cannot assign " + zlTypeName(valueResult.type) + " to static field '" + idNode->name + "." + node->fieldName + "'", node->line);
+                    const auto assignedResult = compoundResult(field->type, field->className, valueResult);
+                    if (!isAssignable(assignedResult.type, field->type, assignedResult.className, field->className)) {
+                        typeError("cannot assign " + zlTypeName(assignedResult.type) + " to static field '" + idNode->name + "." + node->fieldName + "'", node->line);
                     }
                     checkAccess(staticOwner, node->fieldName, field->access, /*isMethod=*/false, node->line);
                     node->isStaticFieldAssign = true;
                     node->staticFieldClassName = staticOwner;
-                    return valueResult;
+                    return assignedResult;
                 }
             }
         }
@@ -5992,9 +6037,11 @@ TypeChecker::InferredType TypeChecker::inferFieldAssign(const FieldAssignExpr* n
         }
     }
 
-    std::string valueClassName = valueResult.className;
     const auto fieldType = typeResolver_.fieldInContext(*field, objClassName, owner, currentClassName_, currentClassTypeParams_);
     field = &fieldType;
+    const InferredType assignedResult = compoundResult(field->type, field->className, valueResult);
+    valueType = assignedResult.type;
+    const std::string valueClassName = assignedResult.className;
     if (!isAssignable(valueType, field->type, valueClassName, field->className)) {
         typeError(
             "cannot assign " + zlTypeName(valueType) + " to field '" + node->fieldName +
@@ -6025,7 +6072,7 @@ TypeChecker::InferredType TypeChecker::inferFieldAssign(const FieldAssignExpr* n
             typeError("field '" + node->fieldName + "' has incompatible func return type", node->line);
         }
     }
-    return valueType;
+    return assignedResult;
 }
 
 TypeChecker::InferredType TypeChecker::inferMethodCall(const MethodCallExpr* node) {

@@ -635,6 +635,11 @@ struct FieldAssignExpr : AstNode {
     NodePtr object;         // the expression producing the object
     std::string fieldName;
     NodePtr value;
+    // UNKNOWN means ordinary `=`; otherwise the underlying operator (`+`,
+    // `-`, ...) reads and updates the field with one receiver evaluation.
+    TokenType compoundOp{TokenType::UNKNOWN};
+    mutable bool isOperatorOverload{false};
+    mutable DispatchSignature resolvedOperatorDispatch;
     mutable bool isStaticFieldAssign{false};
     mutable std::string staticFieldClassName;
     FieldAssignExpr() : AstNode(NodeKind::FieldAssignExpr) {}

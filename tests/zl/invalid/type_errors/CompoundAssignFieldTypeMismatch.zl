@@ -1,0 +1,10 @@
+// Regression fixture - invalid/type_errors - CompoundAssignFieldTypeMismatch
+// A compound field result must remain assignable to the declared field type.
+class CompoundAssignFieldTypeMismatch {
+    int count = 5
+
+    func main(): void {
+        var target = new CompoundAssignFieldTypeMismatch()
+        target.count += 1.5
+    }
+}

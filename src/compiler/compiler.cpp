@@ -1742,18 +1742,52 @@ void Compiler::compileFieldAccess(const FieldAccessExpr* node) {
 }
 
 void Compiler::compileFieldAssign(const FieldAssignExpr* node) {
+    const auto emitCompoundOperator = [&]() {
+        if (node->isOperatorOverload) {
+            emit(OpCode::InvokeMethod, methodSlot(node->resolvedOperatorDispatch), node->line, 1);
+            return;
+        }
+        switch (node->compoundOp) {
+            case TokenType::PLUS: emit(OpCode::Add, 0, node->line); break;
+            case TokenType::MINUS: emit(OpCode::Sub, 0, node->line); break;
+            case TokenType::STAR: emit(OpCode::Mul, 0, node->line); break;
+            case TokenType::SLASH: emit(OpCode::Div, 0, node->line); break;
+            case TokenType::PERCENT: emit(OpCode::Mod, 0, node->line); break;
+            case TokenType::BIT_AND: emit(OpCode::BitAnd, 0, node->line); break;
+            case TokenType::BIT_OR: emit(OpCode::BitOr, 0, node->line); break;
+            case TokenType::BIT_XOR: emit(OpCode::BitXor, 0, node->line); break;
+            case TokenType::SHL: emit(OpCode::Shl, 0, node->line); break;
+            case TokenType::SHR: emit(OpCode::Shr, 0, node->line); break;
+            case TokenType::USHR: emit(OpCode::Ushr, 0, node->line); break;
+            default: throw std::runtime_error("Compiler: unsupported field compound operator");
+        }
+    };
+
     if (node->isStaticFieldAssign) {
-        compileExpression(node->value.get());
+        if (node->compoundOp != TokenType::UNKNOWN) {
+            emit(OpCode::GetStaticField, chunk_.addName(node->staticFieldClassName), node->line,
+                 chunk_.addName(node->fieldName));
+            compileExpression(node->value.get());
+            emitCompoundOperator();
+        } else {
+            compileExpression(node->value.get());
+        }
         emit(OpCode::SetStaticField, chunk_.addName(node->staticFieldClassName), node->line, chunk_.addName(node->fieldName));
         return;
     }
-    // AssignExpr expects the value to be left on the stack.
-    // The SetField instruction pops (value, object) and pushes (value) back.
-    // That means we need object THEN value on the stack.
-    compileExpression(node->object.get()); // push object
-    compileExpression(node->value.get());  // push value
-    std::size_t nameIdx = chunk_.addName(node->fieldName);
-    emit(OpCode::SetField, nameIdx, node->line); // pops value, pops obj, pushes value
+
+    // A compound target leaves the receiver under the old value while reading
+    // the field, so its expression executes exactly once before the RHS.
+    compileExpression(node->object.get());
+    if (node->compoundOp != TokenType::UNKNOWN) {
+        emit(OpCode::Dup, 0, node->line);
+        emit(OpCode::GetField, chunk_.addName(node->fieldName), node->line);
+        compileExpression(node->value.get());
+        emitCompoundOperator();
+    } else {
+        compileExpression(node->value.get());
+    }
+    emit(OpCode::SetField, chunk_.addName(node->fieldName), node->line);
 }
 
 void Compiler::compileMethodCall(const MethodCallExpr* node) {

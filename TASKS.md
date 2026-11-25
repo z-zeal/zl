@@ -72,8 +72,8 @@ trailing dot and `cond ? then : else` closed the same day as exponent notation.
 A null value now prints `null`, not `nil`: `nil` is the runtime type name but not
 a writable literal, so printing it showed text users could not write back.
 Arithmetic, bitwise, and shift compound assignments are sugar for their
-ordinary operators on a plain variable; field and element targets are rejected
-rather than evaluating a sub-expression more than once. `break`/`continue` outside a
+ordinary operators on a plain variable or field, with field receivers evaluated
+once; indexed assignment is not supported yet. `break`/`continue` outside a
 loop is now an error instead of silently falling through (it used to run on both
 backends), tracked by a loop depth that resets per func/lambda body. A double
 range bound (`for i in 0..5.0`) is no longer rejected by MIR verification: the

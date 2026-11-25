@@ -70,9 +70,9 @@ bool isUnary(TokenType type) {
 }
 
 // Compound assignment to a plain variable desugars to ordinary binary and
-// assignment nodes, preserving the checker's existing arithmetic/assignment
-// rules. Field and index targets remain rejected until the AST can represent an
-// evaluate-once lvalue; duplicating their receiver or index would be incorrect.
+// assignment nodes, preserving the checker's existing operator/assignment rules.
+// Field targets use a FieldAssignExpr so their receiver is evaluated once; an
+// index target remains unsupported until indexed assignment has a typed write path.
 NodePtr makeCompoundAssignExpr(const std::string& name, TokenType op, NodePtr value, std::size_t line) {
     auto identifier = std::make_unique<Identifier>();
     identifier->name = name;
@@ -270,15 +270,26 @@ NodePtr ExpressionParser::parsePratt(int minBindingPower) {
         Token op = parser_.advance();
 
         // Compound assignments sit at assignment's level and are right-
-        // associative. Only a plain variable can be lowered without duplicating
-        // a field receiver or index expression.
+        // associative. Variables desugar directly; fields get a dedicated
+        // assign node so their receiver is evaluated once.
         if (isCompoundAssign(type)) {
-            if (left->kind != NodeKind::Identifier) {
-                parser_.error("Left side of '" + std::string(compoundSpelling(type)) + "' must be a variable name");
-            }
-            const std::string name = static_cast<Identifier*>(left.get())->name;
             NodePtr value = parsePratt(binding->rightBindingPower);
-            left = makeCompoundAssignExpr(name, compoundOperator(type), std::move(value), op.line);
+            if (left->kind == NodeKind::Identifier) {
+                const std::string name = static_cast<Identifier*>(left.get())->name;
+                left = makeCompoundAssignExpr(name, compoundOperator(type), std::move(value), op.line);
+            } else if (left->kind == NodeKind::FieldAccessExpr) {
+                auto field = static_cast<FieldAccessExpr*>(left.get());
+                auto node = std::make_unique<FieldAssignExpr>();
+                node->line = op.line;
+                node->object = std::move(field->object);
+                node->fieldName = field->fieldName;
+                node->compoundOp = compoundOperator(type);
+                node->value = std::move(value);
+                left = std::move(node);
+            } else {
+                parser_.error("Left side of '" + std::string(compoundSpelling(type)) +
+                              "' must be a variable name or field access");
+            }
             continue;
         }
 
