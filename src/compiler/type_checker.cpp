@@ -2510,6 +2510,11 @@ void TypeChecker::checkFunctionDecl(const FunctionDecl* node) {
     const bool previousLexicallyInsideMain = lexicallyInsideMain_;
     lexicallyInsideMain_ = (node->name == "main");
 
+    // A func/lambda body is its own break/continue scope: a `break` inside a
+    // lambda cannot act on a loop in the enclosing function.
+    const int previousLoopDepth = loopDepth_;
+    loopDepth_ = 0;
+
     bool previousFunctionSuppresses = functionSuppressesDeprecation_;
     if (const Annotation* sw = findAnnotation(node->annotations, "SuppressWarnings")) {
         functionSuppressesDeprecation_ = sw->argument.value_or("") == "deprecation";
@@ -2601,6 +2606,7 @@ void TypeChecker::checkFunctionDecl(const FunctionDecl* node) {
     currentClassName_.clear();
     inConstructor_ = false;
     lexicallyInsideMain_ = previousLexicallyInsideMain;
+    loopDepth_ = previousLoopDepth;
     functionSuppressesDeprecation_ = previousFunctionSuppresses;
     currentFunctionIsStatic_ = previousFunctionIsStatic;
     currentFunctionIsAsync_ = previousFunctionIsAsync;
@@ -2635,8 +2641,21 @@ void TypeChecker::checkStatement(const AstNode* node) {
         case NodeKind::TryStmt:      checkTryStmt(static_cast<const TryStmt*>(node)); return;
         case NodeKind::ThrowStmt:    checkThrowStmt(static_cast<const ThrowStmt*>(node)); return;
         case NodeKind::ExprStmt:     checkExprStmt(static_cast<const ExprStmt*>(node)); return;
-        case NodeKind::BreakStmt:    return; // no type implications
-        case NodeKind::ContinueStmt: return; // no type implications
+        case NodeKind::BreakStmt:
+            // `break` outside a loop used to be silently accepted: the
+            // reference backend just fell through to the next statement, and MIR
+            // lowering stubbed it with a note, so both "ran" code that could not
+            // have meant anything. It is a statement whose only meaning is a
+            // jump, so there must be a loop to jump out of.
+            if (loopDepth_ == 0) {
+                typeError("'break' outside a loop", node->line);
+            }
+            return;
+        case NodeKind::ContinueStmt:
+            if (loopDepth_ == 0) {
+                typeError("'continue' outside a loop", node->line);
+            }
+            return;
         default:
             return; // unknown statement kinds are silently ignored
     }
@@ -3528,6 +3547,7 @@ void TypeChecker::checkReturnStmt(const ReturnStmt* node) {
 
 void TypeChecker::checkForStmt(const ForStmt* node) {
     for (const auto& assigned : collectLambdaCaptureRefs(node, {}).assignedNames) symbols_.invalidate(assigned);
+    ++loopDepth_;
     ZlType startType = inferExpr(node->start.get());
     ZlType endType = inferExpr(node->end.get());
     ZlType stepType = inferExpr(node->step.get());
@@ -3551,10 +3571,12 @@ void TypeChecker::checkForStmt(const ForStmt* node) {
         restoreOwnershipState(joinOwnershipStates({incoming, bodyExit}));
     }
     symbols_.popScope();
+    --loopDepth_;
 }
 
 void TypeChecker::checkWhileStmt(const WhileStmt* node) {
     for (const auto& assigned : collectLambdaCaptureRefs(node, {}).assignedNames) symbols_.invalidate(assigned);
+    ++loopDepth_;
     if (node->condition) (void)inferExpr(node->condition.get());
     const OwnershipFlowState incoming = captureOwnershipState();
     if (node->body) {
@@ -3564,13 +3586,16 @@ void TypeChecker::checkWhileStmt(const WhileStmt* node) {
         // be observed, so ownership must be conservative.
         restoreOwnershipState(joinOwnershipStates({incoming, bodyExit}));
     }
+    --loopDepth_;
 }
 
 void TypeChecker::checkRepeatStmt(const RepeatStmt* node) {
     for (const auto& assigned : collectLambdaCaptureRefs(node, {}).assignedNames) symbols_.invalidate(assigned);
+    ++loopDepth_;
     // do-while executes the body at least once, then may execute it again.
     if (node->body) checkStatement(node->body.get());
     if (node->condition) (void)inferExpr(node->condition.get());
+    --loopDepth_;
 }
 
 void TypeChecker::checkTryStmt(const TryStmt* node) {

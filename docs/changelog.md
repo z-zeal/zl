@@ -1,5 +1,23 @@
 # Development Checkpoints
 
+## 2026-11-24 - `break`/`continue` outside a loop is an error
+
+Both keywords were silently accepted anywhere. The reference backend just fell
+through to the next statement, so `break` at the top level ran the rest of the
+func; MIR lowering printed a note and stubbed it, leaving bytecode that "ran"
+the same way. Neither could have meant anything: a break is only a jump out of
+an enclosing loop, and there was none.
+
+The checker now tracks loop depth (saved and restored around every func/lambda
+body, so a nested function's `break` cannot act on a loop in the enclosing one)
+and reports `'break' outside a loop` / `'continue' outside a loop`. This is the
+first of the two accepted-but-meaningless statements from the audit; the other,
+`var x = <void call>()`, was fixed earlier.
+
+Gates: `tests/zl/invalid/type_errors/BreakOutsideLoop.zl`,
+`tests/zl/invalid/type_errors/ContinueOutsideLoop.zl`; examples 52/52,
+regressions 114/114, ctest 44/44, native gate PASS.
+
 ## 2026-11-24 - compound assignment: `x += y`
 
 `+=` was a syntax error. It is sugar for `x = x + y`, so it inherits the

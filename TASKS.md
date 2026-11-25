@@ -70,7 +70,9 @@ trailing dot and `cond ? then : else` closed the same day as exponent notation.
 A null value now prints `null`, not `nil`: `nil` is the runtime type name but not
 a writable literal, so printing it showed text users could not write back.
 `+=` is sugar for `x = x + y` on a plain variable; field and element targets are
-rejected rather than duplicating a sub-expression.
+rejected rather than duplicating a sub-expression. `break`/`continue` outside a
+loop is now an error instead of silently falling through (it used to run on both
+backends), tracked by a loop depth that resets per func/lambda body.
 
 ---
 

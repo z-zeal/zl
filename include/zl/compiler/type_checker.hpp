@@ -239,6 +239,11 @@ private:
     void checkForStmt(const ForStmt* node);
     void checkWhileStmt(const WhileStmt* node);
     void checkRepeatStmt(const RepeatStmt* node);
+    // Depth of enclosing loops, so `break`/`continue` can be rejected where
+    // they have no loop to act on. Saved and restored around every func/lambda
+    // body, because a nested function's break belongs to that function, not to
+    // a loop in the enclosing one.
+    int loopDepth_{0};
     void checkTryStmt(const TryStmt* node);
     void checkThrowStmt(const ThrowStmt* node);
     void checkExprStmt(const ExprStmt* node);

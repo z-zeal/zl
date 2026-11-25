@@ -1,0 +1,13 @@
+// ============================================================================
+// Regression fixture - invalid/type_errors - BreakOutsideLoop
+//
+// `break` outside a loop used to be silently accepted: the reference backend
+// fell through to the next statement, and MIR lowering stubbed it with a note,
+// so the program still "ran". A break has no meaning without a loop to leave.
+// ============================================================================
+
+class BreakOutsideLoop {
+    func main(): void {
+        break
+    }
+}
