@@ -46,7 +46,11 @@ std::optional<InfixBinding> infixBinding(TokenType type) {
         case TokenType::PERCENT: return InfixBinding{100, 101};
         case TokenType::POW:     return InfixBinding{120, 120}; // right-associative
         case TokenType::ASSIGN:
-        case TokenType::PLUS_EQ: return InfixBinding{1, 1};     // right-associative
+        case TokenType::PLUS_EQ:
+        case TokenType::MINUS_EQ:
+        case TokenType::STAR_EQ:
+        case TokenType::SLASH_EQ:
+        case TokenType::PERCENT_EQ: return InfixBinding{1, 1};  // right-associative
         default:                 return std::nullopt;
     }
 }
@@ -59,20 +63,17 @@ bool isUnary(TokenType type) {
            type == TokenType::NOT || type == TokenType::BIT_NOT;
 }
 
-// `target += value` becomes `target = target + value`.
-//
-// Only a plain variable name is accepted: the name is a string already, so no AST
-// clone is needed. A field (`x.count += 1`) or an element (`xs[i] += 1`) would
-// need the object/index sub-expression duplicated, and duplicating it changes how
-// many times a getter or index expression runs - so those report a clear error
-// instead of silently doing the wrong thing.
-NodePtr makePlusAssignExpr(const std::string& name, NodePtr value, std::size_t line) {
+// Compound assignment to a plain variable desugars to ordinary binary and
+// assignment nodes, preserving the checker's existing arithmetic/assignment
+// rules. Field and index targets remain rejected until the AST can represent an
+// evaluate-once lvalue; duplicating their receiver or index would be incorrect.
+NodePtr makeCompoundAssignExpr(const std::string& name, TokenType op, NodePtr value, std::size_t line) {
     auto identifier = std::make_unique<Identifier>();
     identifier->name = name;
     identifier->line = line;
 
     auto binary = std::make_unique<BinaryExpr>();
-    binary->op = TokenType::PLUS;
+    binary->op = op;
     binary->left = std::move(identifier);
     binary->right = std::move(value);
     binary->line = line;
@@ -82,6 +83,34 @@ NodePtr makePlusAssignExpr(const std::string& name, NodePtr value, std::size_t l
     node->value = std::move(binary);
     node->line = line;
     return node;
+}
+
+bool isCompoundAssign(TokenType type) {
+    return type == TokenType::PLUS_EQ || type == TokenType::MINUS_EQ ||
+           type == TokenType::STAR_EQ || type == TokenType::SLASH_EQ ||
+           type == TokenType::PERCENT_EQ;
+}
+
+TokenType compoundOperator(TokenType type) {
+    switch (type) {
+        case TokenType::PLUS_EQ: return TokenType::PLUS;
+        case TokenType::MINUS_EQ: return TokenType::MINUS;
+        case TokenType::STAR_EQ: return TokenType::STAR;
+        case TokenType::SLASH_EQ: return TokenType::SLASH;
+        case TokenType::PERCENT_EQ: return TokenType::PERCENT;
+        default: return TokenType::UNKNOWN;
+    }
+}
+
+const char* compoundSpelling(TokenType type) {
+    switch (type) {
+        case TokenType::PLUS_EQ: return "+=";
+        case TokenType::MINUS_EQ: return "-=";
+        case TokenType::STAR_EQ: return "*=";
+        case TokenType::SLASH_EQ: return "/=";
+        case TokenType::PERCENT_EQ: return "%=";
+        default: return "compound assignment";
+    }
 }
 
 // Ternary binds tighter than assignment (`a = c ? b : d` assigns the whole
@@ -219,16 +248,16 @@ NodePtr ExpressionParser::parsePratt(int minBindingPower) {
 
         Token op = parser_.advance();
 
-        // `+=` sits at assignment's level and is right-associative, so it shares
-        // the `=` arm: only a plain variable name can be desugared without
-        // duplicating a sub-expression.
-        if (type == TokenType::PLUS_EQ) {
+        // Compound assignments sit at assignment's level and are right-
+        // associative. Only a plain variable can be lowered without duplicating
+        // a field receiver or index expression.
+        if (isCompoundAssign(type)) {
             if (left->kind != NodeKind::Identifier) {
-                parser_.error("Left side of '+=' must be a variable name");
+                parser_.error("Left side of '" + std::string(compoundSpelling(type)) + "' must be a variable name");
             }
-            std::string name = static_cast<Identifier*>(left.get())->name;
+            const std::string name = static_cast<Identifier*>(left.get())->name;
             NodePtr value = parsePratt(binding->rightBindingPower);
-            left = makePlusAssignExpr(name, std::move(value), op.line);
+            left = makeCompoundAssignExpr(name, compoundOperator(type), std::move(value), op.line);
             continue;
         }
 

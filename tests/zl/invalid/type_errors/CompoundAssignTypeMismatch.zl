@@ -1,0 +1,8 @@
+// Regression fixture - invalid/type_errors - CompoundAssignTypeMismatch
+// `-=` uses the same assignment compatibility checks as `n = n - value`.
+class CompoundAssignTypeMismatch {
+    func main(): void {
+        int count = 5
+        count -= 1.5
+    }
+}

@@ -389,10 +389,22 @@ std::vector<Token> Lexer::tokenize() {
                 if (match('=')) tokens.push_back(makeToken(TokenType::PLUS_EQ, "+=", startLine, startCol));
                 else tokens.push_back(makeToken(TokenType::PLUS, "+", startLine, startCol));
                 break;
-            case '-': tokens.push_back(makeToken(TokenType::MINUS, "-", startLine, startCol)); break;
-            case '*': tokens.push_back(makeToken(TokenType::STAR, "*", startLine, startCol)); break;
-            case '/': tokens.push_back(makeToken(TokenType::SLASH, "/", startLine, startCol)); break;
-            case '%': tokens.push_back(makeToken(TokenType::PERCENT, "%", startLine, startCol)); break;
+            case '-':
+                if (match('=')) tokens.push_back(makeToken(TokenType::MINUS_EQ, "-=", startLine, startCol));
+                else tokens.push_back(makeToken(TokenType::MINUS, "-", startLine, startCol));
+                break;
+            case '*':
+                if (match('=')) tokens.push_back(makeToken(TokenType::STAR_EQ, "*=", startLine, startCol));
+                else tokens.push_back(makeToken(TokenType::STAR, "*", startLine, startCol));
+                break;
+            case '/':
+                if (match('=')) tokens.push_back(makeToken(TokenType::SLASH_EQ, "/=", startLine, startCol));
+                else tokens.push_back(makeToken(TokenType::SLASH, "/", startLine, startCol));
+                break;
+            case '%':
+                if (match('=')) tokens.push_back(makeToken(TokenType::PERCENT_EQ, "%=", startLine, startCol));
+                else tokens.push_back(makeToken(TokenType::PERCENT, "%", startLine, startCol));
+                break;
             case '^':
                 if (match('^')) tokens.push_back(makeToken(TokenType::POW, "^^", startLine, startCol));
                 else tokens.push_back(makeToken(TokenType::BIT_XOR, "^", startLine, startCol));

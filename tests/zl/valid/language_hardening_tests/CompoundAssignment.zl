@@ -1,0 +1,32 @@
+// Regression fixture - valid/language_hardening_tests - CompoundAssignment
+// Compound operators share ordinary arithmetic and assignment checking and
+// preserve right-associative assignment semantics.
+
+class CompoundAssignment {
+    func main(): void {
+        int count = 20
+        count -= 3
+        count *= 2
+        count %= 7
+        if (count != 6) {
+            throw new Exception("CompoundAssignment failed: integer operators")
+        }
+
+        double ratio = 8.0
+        ratio /= 2.0
+        ratio *= 1.5
+        ratio -= 1.0
+        if (ratio != 5.0) {
+            throw new Exception("CompoundAssignment failed: double operators")
+        }
+
+        int total = 1
+        int factor = 2
+        int scale = 3
+        total += factor *= scale
+        if (total != 7 || factor != 6) {
+            throw new Exception("CompoundAssignment failed: right associativity")
+        }
+        log("ok")
+    }
+}

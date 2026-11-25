@@ -1,14 +1,28 @@
 # Development Checkpoints
 
+## 2026-11-22 - add `-=`, `*=`, `/=`, and `%=`
+
+The existing `+=` sugar now has matching subtraction, multiplication, division,
+and remainder forms. Each is desugared to the corresponding binary operation
+and assignment on a plain variable, so normal arithmetic and assignment rules
+apply. Field and index targets remain rejected rather than duplicating their
+receiver/index expressions.
+
+`CompoundAssignment.zl` covers all operators, including right-associative
+nesting; invalid fixtures cover a non-variable target and type mismatch. Both
+AST and MIR paths agree. Examples 52/52, regressions 120/120, ctest 44/44,
+native gate PASS.
+
 ## 2026-11-22 - iterate sets and map keys with for-in
 
 For-in now covers all six collection forms: native `list<T>`, `List<T>`,
 native `set<T>`, `Set<T>`, native `map<K,V>`, and `Map<K,V>`. Lists and sets
 yield elements; maps yield keys. Set elements and map keys are converted to a
 list snapshot before entering the loop, so mutations during the body do not
-change the iteration set; their order is unspecified. The source expression is
-still evaluated once. `ForInCollections.zl` covers native and wrapper lists, sets, and
-maps on both AST and MIR paths.
+change the iteration set. Map keys retain the map's insertion order; set order
+is not guaranteed. The source expression is still evaluated once.
+`ForInCollections.zl` covers native and wrapper lists, sets, and maps on both
+AST and MIR paths.
 
 Gates: examples 52/52, regressions 117/117, ctest 44/44, native gate PASS.
 

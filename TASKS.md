@@ -65,14 +65,15 @@ failing at run time instead of at the use.
 The remaining suggestions from that audit do not need separate syntax: `++`
 is written as `x += 1`, and `match` already covers switch-style branching. The
 new `for value in collection` form iterates lists and sets by element, and maps
-by key; set/map order is unspecified. The
+by key; map order is insertion order, while set order is unspecified. The
 literal spellings and the
 conditional expression are done - hex, binary, `_` separators, unary `+`, a
 trailing dot and `cond ? then : else` closed the same day as exponent notation.
 A null value now prints `null`, not `nil`: `nil` is the runtime type name but not
 a writable literal, so printing it showed text users could not write back.
-`+=` is sugar for `x = x + y` on a plain variable; field and element targets are
-rejected rather than duplicating a sub-expression. `break`/`continue` outside a
+`+=`, `-=`, `*=`, `/=`, and `%=` are sugar for their ordinary arithmetic and
+assignment forms on a plain variable; field and element targets are rejected
+rather than evaluating a sub-expression more than once. `break`/`continue` outside a
 loop is now an error instead of silently falling through (it used to run on both
 backends), tracked by a loop depth that resets per func/lambda body. A double
 range bound (`for i in 0..5.0`) is no longer rejected by MIR verification: the
