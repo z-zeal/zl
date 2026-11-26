@@ -174,12 +174,13 @@ Two decisions worth stating:
   recognise is classified as a managed reference, never as an integer.
 * **`Reference` is carried and narrowly used.** References move through
   parameters, locals, calls and returns. Non-generic `data` records and simple
-  non-inherited classes with native-lowerable constructors can be allocated
-  through the GC-aware bridge. Their int, bool, double and nested-object fields
-  are loaded and stored through typed helpers; class fields receive VM-compatible
-  defaults before constructor initialization. Equality, concatenation,
-  inheritance, exceptions, and any constructor/initializer operation outside the
-  selected instruction subset remain refused. Every bridge call publishes frame
+  non-generic single-inheritance classes without shadowed instance fields can be
+  allocated through the GC-aware bridge when their constructors are natively
+  selectable. Their int, bool, double and nested-object fields are accessed
+  through typed helpers; class fields receive VM-compatible defaults before
+  base-to-derived constructor initialization. Equality, concatenation, dynamic
+  dispatch, exceptions, and unsupported inheritance/constructor operations
+  remain refused. Every bridge call publishes frame
   roots before a pending collection.
   Details are in
   [native-gc-map.md](native-gc-map.md).
@@ -375,10 +376,11 @@ native frame and polls the GC coordinator; on collection, frame-map addresses
 are resolved against the managed allocation registry and published as typed
 roots. The regression forces collection after a runtime helper allocates and
 checks the object survives solely through its native spill. The driver executes
-non-generic data records and simple non-inherited classes with native-lowerable
-constructors and field initializers, typed fields, zero-value initialization,
-and nested references. Remaining P1-6 work includes inheritance, dynamic method
-dispatch, and the broader mixed-mode path, not root publication.
+non-generic data records and simple non-generic single-inheritance class
+hierarchies with natively selectable constructors and field initializers, typed
+fields, zero-value initialization, and nested references. Remaining P1-6 work
+includes dynamic method dispatch and the broader mixed-mode path, not root
+publication.
 See [native-gc-map.md](native-gc-map.md).
 
 ## Tests
@@ -405,16 +407,17 @@ including the NaN cases, two-way branches, a counted loop through mutable slots,
 a cross-function direct call, division edge cases, reference carry, end-to-end
 allocation and field reads/writes for non-generic data records and simple
 classes (including nested references surviving forced collection, class defaults,
-and field-initializer/constructor execution), refusal of unsupported object
-shapes and callers whose callees were refused, refusal of MIR that does not
-verify, and real ZL source lowered through the real front end.
+field-initializer/constructor execution, and base-first initialization), refusal
+of unsupported object shapes and callers whose callees were refused, refusal of
+MIR that does not verify, and real ZL source lowered through the real front end.
 
 ## What is deliberately missing
 
 Named so that no one has to discover them by reading the code: register
-allocation and stack argument passing; inheritance layouts and dynamic method
-dispatch (the supported class subset is non-inherited and requires every
-constructor/initializer operation to be natively selectable); unwind tables
+allocation and stack argument passing; generic/unsupported inheritance layouts
+and dynamic method dispatch (the supported class subset is non-generic, has no
+shadowed instance fields, and requires every constructor/initializer operation
+to be natively selectable); unwind tables
 (hence an arithmetic fault in natively executed code is a SIGILL trap, not a catchable
 `ArithmeticError` — the VM remains the tier where those are catchable); string
 and collection operations, closures, generic instantiation, jump tables for

@@ -1320,6 +1320,18 @@ void testNativePlainClassFields() {
                 this.value = this.value + delta
             }
         }
+        class NativeBaseCounter {
+            public int baseValue = 10
+            func NativeBaseCounter() {
+                this.baseValue = this.baseValue + 2
+            }
+        }
+        class NativeDerivedCounter extends NativeBaseCounter {
+            public int derivedValue = 20
+            func NativeDerivedCounter(int delta) {
+                this.derivedValue = this.derivedValue + delta
+            }
+        }
         class NativeClassProbe {
             static func defaultInteger(): int {
                 var counter = new NativeCounter()
@@ -1343,6 +1355,10 @@ void testNativePlainClassFields() {
             static func initializedClassField(): int {
                 var counter = new NativeInitializedCounter(3)
                 return counter.value
+            }
+            static func inheritedClassFields(): int {
+                var counter = new NativeDerivedCounter(3)
+                return counter.baseValue + counter.derivedValue
             }
         }
     )", ok);
@@ -1404,6 +1420,33 @@ void testNativePlainClassFields() {
     require(constructorPressureInserted,
             "constructor test forces collection while running field initialization");
     if (!constructorPressureInserted) return;
+
+    LirFunction* baseConstructor = nullptr;
+    for (auto& fn : compiled.lir.functions)
+        if (fn.name.find("NativeBaseCounter") != std::string::npos &&
+            fn.parameters.size() == 1) baseConstructor = &fn;
+    require(baseConstructor != nullptr, "base class constructor is selected natively");
+    bool basePressureInserted = false;
+    if (baseConstructor != nullptr) {
+        for (auto& block : baseConstructor->blocks) {
+            auto store = std::find_if(block.instructions.begin(), block.instructions.end(),
+                [](const LirInstruction& ins) {
+                    return ins.opcode == LirOpcode::CallRuntime &&
+                           ins.callee == "__zl_native_field_store_i";
+                });
+            if (store == block.instructions.end()) continue;
+            LirInstruction pressure;
+            pressure.opcode = LirOpcode::CallRuntime;
+            pressure.callee = "test.gc.pressure";
+            pressure.line = store->line;
+            block.instructions.insert(store, std::move(pressure));
+            basePressureInserted = true;
+            break;
+        }
+    }
+    require(basePressureInserted,
+            "base constructor test forces collection during inherited initialization");
+    if (!basePressureInserted) return;
     if (std::find(compiled.lir.runtimeImports.begin(), compiled.lir.runtimeImports.end(),
                   "test.gc.pressure") == compiled.lir.runtimeImports.end())
         compiled.lir.runtimeImports.push_back("test.gc.pressure");
@@ -1436,6 +1479,10 @@ void testNativePlainClassFields() {
     runInt("initializedClassField", 8);
     require(TracingGC::instance().counters().collections > collectionsBeforeConstructor,
             "class object stays rooted through constructor field initialization and body");
+    const auto collectionsBeforeInheritance = TracingGC::instance().counters().collections;
+    runInt("inheritedClassFields", 35);
+    require(TracingGC::instance().counters().collections > collectionsBeforeInheritance,
+            "derived object stays rooted across base constructor and inherited field access");
 
     std::string error;
     const std::size_t doubleEntry = executable.resolve("defaultDouble", error);
