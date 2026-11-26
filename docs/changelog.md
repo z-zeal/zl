@@ -1,5 +1,17 @@
 # Development Checkpoints
 
+## 2026-11-22 - execute native-lowerable class initialization and constructors
+
+The native class slice now selects field initializer code and constructor bodies
+when their MIR consists of supported operations, instead of limiting classes to
+empty constructors. Defaults still materialize before constructor execution;
+constructor calls carry the receiver and parameters through native frame maps.
+The end-to-end ZL regression uses a primitive field initializer and a constructor
+that updates it, then forces collection during initialization to verify the
+receiver remains rooted across both caller and callee frames. Inheritance,
+dynamic dispatch, exceptions, and unsupported constructor instructions remain
+refused.
+
 ## 2026-11-22 - add a bounded native class-object slice
 
 Native allocation and typed field helpers now also cover non-generic classes

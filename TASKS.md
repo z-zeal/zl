@@ -37,9 +37,9 @@ Priorities: **P0** produces a wrong result or refuses a valid program ·
 
 Only the native line remains: P1-6, whose execution driver shipped 2026-09-20;
 reference carry, frame maps, runtime root publication, non-generic data records,
-and simple non-inherited classes with trivial constructors are now in place.
-Field initializers, nontrivial constructors, inheritance, dynamic dispatch and
-the broader mixed-mode path remain, followed by PF-3. Closed the same
+and simple non-inherited classes with natively selectable field initializers
+and constructors are now in place. Inheritance, dynamic dispatch and the broader
+mixed-mode path remain, followed by PF-3. Closed the same
 day: P1-10 (stabilization gate - two fixtures, two written arguments, verdict
 in the [examples review](examples/REVIEW.md)), P2-5 (registry scope in
 [docs/packages.md](docs/packages.md)), and PF-1 + PF-2 at the re-measured
@@ -110,21 +110,22 @@ and resolves map addresses to typed GC roots. Unknown symbols fail closed.
 `NativeExecutable::callReference` exercises the borrowed-pointer shape, while
 the `--run-native` CLI still cannot invent pointers from scalar flags. Native
 execution supports non-generic data records and simple non-inherited classes
-with empty/trivial constructors. Both support int/bool/double and nested object
-fields; classes also materialize VM-compatible primitive defaults. Equality,
-field initializers, nontrivial constructors, inheritance and dynamic methods
-remain refused. `testNativeDataRecordFields` and `testNativePlainClassFields`
-force collection during nested-field access while native frame roots keep the
-object graph alive; the maps stay conservative. `testNativeSafepointRootPublication`
+whose initializer/constructor bodies lower to supported native operations. Both
+support int/bool/double and nested object fields; classes materialize VM-compatible
+field defaults before running initialization. Equality, inheritance, exceptions,
+and unsupported constructor operations remain refused.
+`testNativeDataRecordFields` and `testNativePlainClassFields` force collection
+during nested-field access and class initialization while native frame roots
+keep the object graph alive; the maps stay conservative. `testNativeSafepointRootPublication`
 and `testEmittedFrameMap` retain the underlying root-map gates. All live in
 `tests/native_backend_tests.cpp`; see [docs/native-gc-map.md](docs/native-gc-map.md).
 
 **Remaining:**
 - The subset is still ~1.7% of the functions in a realistic module
   ([research/report.md](research/report.md) §2.7) - ints, floats, carried refs,
-  and non-generic data records plus simple non-inherited classes with trivial
-  constructors and int/bool/double or nested-object fields; field initializers,
-  nontrivial constructors, inheritance, collections, closures, exceptions and
+  and non-generic data records plus simple non-inherited classes with
+  natively-selectable initializers/constructors and int/bool/double or
+  nested-object fields; inheritance, collections, closures, exceptions and
   async remain outside it. The driver calls homogeneous integer, double or
   borrowed-reference signatures and refuses mixed shapes by name.
 - In-program mixed mode is unimplemented: `--backend native` compiles the subset
@@ -133,10 +134,10 @@ and `testEmittedFrameMap` retain the underlying root-map gates. All live in
   `src/native/pipeline.cpp:59`); there is no arm64 encoder, so macOS CI
   cross-compiles to SysV.
 - No register allocator, no stack arguments, no unwind tables, no object-file
-  or JIT writer; field initializer expressions, nontrivial constructors,
-  inheritance layouts and dynamic dispatch remain refused (only simple classes
-  and non-generic data records are supported). The root bridge polls at calls,
-  so call-free loops can delay a rendezvous. See [docs/native-gc-map.md](docs/native-gc-map.md).
+  or JIT writer; inheritance layouts, dynamic dispatch and initializer/constructor
+  operations outside the native instruction subset remain refused. The root
+  bridge polls at calls, so call-free loops can delay a rendezvous. See
+  [docs/native-gc-map.md](docs/native-gc-map.md).
 - An arithmetic fault in driver-executed native bytes is `SIGILL`, not a
   catchable `ArithmeticError`.
 

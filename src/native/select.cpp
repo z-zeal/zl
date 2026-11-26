@@ -42,8 +42,8 @@ public:
         if (fn_.isAsync) refuse("async functions need a scheduler frame the native tier has no shape for", fn_.location);
         if (fn_.isLambda || !fn_.captures.empty()) refuse("closures need a capture environment layout", fn_.location);
         if (fn_.isGenericTemplate) refuse("generic templates are not instantiated by the native tier", fn_.location);
-        if (fn_.isConstructor && !trivialNativeConstructor(fn_))
-            refuse("nontrivial constructors are outside the native object subset", fn_.location);
+        if (fn_.isConstructor && !supportedNativeConstructor(fn_))
+            refuse("constructor requires a non-generic, non-inherited class layout", fn_.location);
 
         // The whole point of the pipeline: every fact below is read out of the
         // verified MIR. Nothing consults the AST or the type checker.
@@ -69,14 +69,11 @@ private:
 
     ValueClass classify(std::uint32_t typeId) const { return classifyType(mir_, typeId); }
 
-    bool trivialNativeConstructor(const Function& function) const {
+    bool supportedNativeConstructor(const Function& function) const {
         if (!function.isConstructor || function.ownerClass.empty()) return false;
         const ClassLayout* layout = mir_.classLayout(function.ownerClass);
-        if (layout == nullptr || layout->isData || !layout->parent.empty() ||
-            !layout->typeParameters.empty() || function.blocks.size() != 1) return false;
-        const BasicBlock& entry = function.blocks.front();
-        return entry.id == function.entryBlock && entry.exceptionHandlers.empty() &&
-               entry.instructions.empty() && entry.terminator.kind == TerminatorKind::Return;
+        return layout != nullptr && !layout->isData && layout->parent.empty() &&
+               layout->typeParameters.empty();
     }
 
     // References may be carried through values and used only in the narrow
@@ -332,13 +329,13 @@ private:
             [&](const Function& function) {
                 return function.isConstructor && function.ownerClass == layout->name;
             });
-        return constructor != mir_.functions.end() && trivialNativeConstructor(*constructor);
+        return constructor != mir_.functions.end() && supportedNativeConstructor(*constructor);
     }
 
     void requireNativeObject(std::uint32_t typeId, const SourceLocation& location,
                              const std::string& operation) const {
         if (!supportedNativeObjectType(typeId))
-            refuse(operation + " requires a non-generic data record or non-inherited class with a trivial constructor",
+            refuse(operation + " requires a non-generic data record or a non-inherited class",
                    location);
     }
 
@@ -405,7 +402,7 @@ private:
         tempVReg_[mirIns.result] = object;
         block.instructions.push_back(std::move(call));
 
-        // Mirror the VM's zero-value defaults for trivial-constructor classes.
+        // Mirror the VM's zero-value defaults before the constructor runs.
         // These stores are runtime calls too: the just-allocated object remains
         // in the native frame map across every helper/safepoint.
         if (isPlainClass) {

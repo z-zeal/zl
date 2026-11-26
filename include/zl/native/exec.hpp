@@ -36,8 +36,8 @@
 //
 // The refusal list is the current subset boundary made concrete. Reference
 // carry, safepoint root publication, non-generic data records, and simple
-// non-inherited classes with trivial constructors support allocation/fields;
-// nontrivial class initialization and dispatch remain open P1-6 steps.
+// non-inherited classes with natively selectable initialization/constructors
+// support allocation/fields; inheritance and dispatch remain open P1-6 steps.
 
 namespace zl::native {
 
