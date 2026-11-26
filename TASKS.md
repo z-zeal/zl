@@ -23,9 +23,9 @@ Rules of upkeep:
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release           # once
 cmake --build build --config Release --target zl-tests   # core + every regression target
-(cd build && ctest -C Release)                           # 42 tests, includes both parity scripts
+(cd build && ctest -C Release)                           # 44 tests, includes both parity scripts
 examples/run_all.sh build/zl_language                    # 52 examples, byte-compared to their expected output
-bash scripts/run_regressions.sh build/zl_language all    # 91 fixtures under tests/zl (verified 2026-09-20)
+bash scripts/run_regressions.sh build/zl_language all    # 124 fixtures under tests/zl
 bash scripts/native_gate.sh build/zl_language            # native tier gate
 ```
 
@@ -38,8 +38,9 @@ Priorities: **P0** produces a wrong result or refuses a valid program ·
 Only the native line remains: P1-6, whose execution driver shipped 2026-09-20;
 reference carry, frame maps, runtime root publication, non-generic data records,
 and simple non-generic class hierarchies with natively selectable field
-initializers and constructors are now in place. Dynamic dispatch and the broader
-mixed-mode path remain, followed by PF-3. Closed the same
+initializers and constructors are now in place. Direct static/super calls and
+virtual dispatch across known class layouts are selected; unsupported target
+bodies fail closed. The broader mixed-mode path remains, followed by PF-3. Closed the same
 day: P1-10 (stabilization gate - two fixtures, two written arguments, verdict
 in the [examples review](examples/REVIEW.md)), P2-5 (registry scope in
 [docs/packages.md](docs/packages.md)), and PF-1 + PF-2 at the re-measured
@@ -113,34 +114,51 @@ execution supports non-generic data records and non-generic single-inheritance
 class hierarchies without shadowed instance fields, when initializer/constructor
 bodies lower to supported native operations. Supported int/bool/double and
 nested-object fields are laid out base-first and receive VM-compatible defaults
-before initialization. Equality, dynamic dispatch, exceptions, and unsupported
-constructor operations remain refused. `testNativeDataRecordFields` and
+before initialization. Direct static/super calls and runtime dispatch across
+known non-generic class layouts are supported when every target body is native;
+unsupported targets, equality, exceptions, and unsupported constructor
+operations remain refused. `testNativeDataRecordFields` and
 `testNativePlainClassFields` force collection during nested access, class
 initialization, and a base-constructor call while native frame roots keep the
 object graph alive; the maps stay conservative. `testNativeSafepointRootPublication`
 and `testEmittedFrameMap` retain the underlying root-map gates. All live in
 `tests/native_backend_tests.cpp`; see [docs/native-gc-map.md](docs/native-gc-map.md).
 
-**Remaining:**
-- The subset is still ~1.7% of the functions in a realistic module
-  ([research/report.md](research/report.md) §2.7) - ints, floats, carried refs,
-  and non-generic data records plus simple non-generic single-inheritance
-  classes with natively-selectable initializers/constructors and int/bool/double
-  or nested-object fields; dynamic dispatch, collections, closures, exceptions
-  and async remain outside it. The driver calls homogeneous integer, double or
-  borrowed-reference signatures and refuses mixed shapes by name.
-- In-program mixed mode is unimplemented: `--backend native` compiles the subset
-  and still runs the program on the VM.
-- Win64 is select-only (`TargetMachine::encoderAvailable()` false,
-  `src/native/pipeline.cpp:59`); there is no arm64 encoder, so macOS CI
-  cross-compiles to SysV.
-- No register allocator, no stack arguments, no unwind tables, no object-file
-  or JIT writer; generic/unsupported inheritance layouts, dynamic dispatch and
-  initializer/constructor operations outside the native instruction subset
-  remain refused. The root bridge polls at calls, so call-free loops can delay a
-  rendezvous. See [docs/native-gc-map.md](docs/native-gc-map.md).
-- An arithmetic fault in driver-executed native bytes is `SIGILL`, not a
-  catchable `ArithmeticError`.
+**Completed dispatch slice (2026-11-22):** direct `InvokeStatic`/`InvokeSuper`
+plus runtime-class dispatch over known non-generic class layouts. Executed-byte
+tests cover inherited, static and super calls, base-vs-derived overrides, and
+refusal propagation when an override body is unavailable. Runtime dispatch is
+fail-closed if a class is outside the compiled target set. See
+[docs/native-backend.md](docs/native-backend.md).
+
+**Remaining — recommended order:**
+1. **In-program mixed mode.** Make `--backend native` actually enter emitted
+   code and bridge unsupported functions to the VM in both directions, keeping
+   object handles and native-frame roots valid across the boundary.
+2. **Collection path for the acceptance program.** Add the minimum list/map or
+   collection operations needed by a named heap-using program, using traced
+   runtime helpers where native collection layouts are not yet supported.
+3. **Broaden object coverage.** Add generic class layouts/inheritance and more
+   constructor/initializer operations only with explicit MIR typing, layout
+   checks, and negative tests for unsupported shapes.
+4. **P1-6 acceptance gate.** Run a named program starting from `NativeExecBench`
+   plus heap objects and collections end-to-end through `--backend native`, then
+   report wall-time comparison against the VM. Allocation and root publication
+   remain one coupled requirement.
+5. **Execution/ABI expansion.** Add mixed external argument shapes, stack
+   arguments, additional executable targets (Win64/arm64), and unwind support
+   for catchable native exceptions; separately decide whether object-file/JIT
+   output is in scope.
+6. **Safepoint and retention follow-up.** Add loop/back-edge polls where
+   call-free loops delay rendezvous. Measure conservative-root retention before
+   considering precise liveness maps, with superset-safety tests.
+
+Current constraints: the native subset is still ~1.7% of realistic-module
+functions ([research/report.md](research/report.md) §2.7); closures and async
+remain outside it, the driver entrypoints accept homogeneous integer/double or
+borrowed-reference signatures, Win64 is select-only, and arithmetic faults in
+driver-executed code are `SIGILL` rather than catchable `ArithmeticError`.
+See [docs/native-gc-map.md](docs/native-gc-map.md) for the phase gates.
 
 **Done when** a named program (start again from `NativeExecBench.zl`, plus
 language-level heap objects and collections) runs end-to-end through

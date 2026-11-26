@@ -37,7 +37,8 @@
 // The refusal list is the current subset boundary made concrete. Reference
 // carry, safepoint root publication, non-generic data records, and simple
 // non-generic single-inheritance classes support allocation/fields when their
-// initialization is natively selectable; dynamic dispatch remains open.
+// initialization is natively selectable; virtual dispatch is limited to the
+// compiled class set and fails closed for unknown runtime classes.
 
 namespace zl::native {
 
@@ -103,6 +104,8 @@ private:
         void* userData, const std::vector<NativeFrameRecord>& frames);
     static const char* nativeRuntimeString(void* userData,
                                            std::uint64_t stringIndex) noexcept;
+    static std::uintptr_t nativeDispatchTarget(void* userData, const char* runtimeClass,
+                                               std::uint64_t dispatchId) noexcept;
     bool ok_{false};
     std::string error_;
     void* base_{nullptr};
@@ -113,6 +116,8 @@ private:
     std::vector<ValueClass> returnClasses_;
     std::vector<FrameMetadata> frameMetadata_;
     std::vector<std::string> runtimeStrings_;
+    std::unordered_map<std::uint64_t, std::unordered_map<std::string, std::uintptr_t>>
+        virtualTargets_;
 };
 
 } // namespace zl::native

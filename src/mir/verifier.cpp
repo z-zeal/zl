@@ -2205,14 +2205,19 @@ private:
                     }
                     return;
                 }
-                if (callee->parameters.size() != operands.size() - receiverCount) {
+                // InvokeSuper is a direct call to a method body: unlike a
+                // virtual InvokeMethod, its receiver is an ordinary first
+                // callee parameter. It is omitted only from the separately
+                // recorded explicit-argument signature above.
+                const std::size_t calleeOperandOffset = opcode == Opcode::InvokeSuper ? 0 : receiverCount;
+                if (callee->parameters.size() != operands.size() - calleeOperandOffset) {
                     error(std::string(name) + " of '" + callee->name + "' passes " +
-                          std::to_string(operands.size() - receiverCount) + " argument(s) but it takes " +
+                          std::to_string(operands.size() - calleeOperandOffset) + " argument(s) but it takes " +
                           std::to_string(callee->parameters.size()), id, index, loc);
                     return;
                 }
                 for (std::size_t i = 0; i < callee->parameters.size(); ++i) {
-                    const Operand& argument = operands[i + receiverCount];
+                    const Operand& argument = operands[i + calleeOperandOffset];
                     // A match arm knows more about its subject than the
                     // subject's declared type says; check the value as it is
                     // here, not as it is everywhere.

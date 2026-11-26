@@ -231,7 +231,7 @@ struct FunctionEmitter {
         bool hasCall = false;
         for (const auto& block : fn.blocks)
             for (const auto& ins : block.instructions)
-                if (ins.opcode == LirOpcode::Call || ins.opcode == LirOpcode::CallRuntime)
+                if (lirOpcodeIsCall(ins.opcode))
                     hasCall = true;
         const std::size_t minimum = hasCall ? target.cc.shadowSpace : 0;
         frameSize = ((std::max(used, minimum) + 15) / 16) * 16;
@@ -598,6 +598,7 @@ struct FunctionEmitter {
 
             case LirOpcode::Call:
             case LirOpcode::CallRuntime:
+            case LirOpcode::CallIndirect:
                 return emitCall(ins);
 
             case LirOpcode::Jump: {
@@ -671,6 +672,15 @@ struct FunctionEmitter {
             const std::size_t address = a.movRegImm64Patch(11, 0);
             relocations.push_back(EmittedFunction::Relocation{
                 address, ins.callee, true, EmittedFunction::Relocation::Kind::Absolute64});
+            a.callReg(11);
+        } else if (ins.opcode == LirOpcode::CallIndirect) {
+            if (ins.calleeTarget.isNone() ||
+                !loadOperand(ins.calleeTarget, ValueClass::Integer, 11))
+                return fail("indirect call has no executable target");
+            a.testRegReg(11, 11);
+            const std::size_t validTarget = a.jccRel32(kJNE);
+            a.ud2();
+            a.patchRel32(validTarget, a.here());
             a.callReg(11);
         } else {
             const std::size_t at = a.callRel32();

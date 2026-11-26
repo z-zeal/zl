@@ -13,6 +13,7 @@ struct NativeGcSession {
     void* userData{nullptr};
     NativeFrameAddressProvider provider{nullptr};
     NativeRuntimeStringProvider stringProvider{nullptr};
+    NativeDispatchResolver dispatchResolver{nullptr};
     std::vector<NativeFrameRecord> frames;
     bool failed{false};
     NativeGcSession* parent{nullptr};
@@ -61,12 +62,14 @@ extern "C" void nativeSafepointLeave() noexcept {
 } // namespace
 
 NativeGcSession* beginNativeGcSession(void* userData, NativeFrameAddressProvider provider,
-                                      NativeRuntimeStringProvider stringProvider) {
+                                      NativeRuntimeStringProvider stringProvider,
+                                      NativeDispatchResolver dispatchResolver) {
     auto* session = new (std::nothrow) NativeGcSession();
     if (session == nullptr) return nullptr;
     session->userData = userData;
     session->provider = provider;
     session->stringProvider = stringProvider;
+    session->dispatchResolver = dispatchResolver;
     session->parent = activeSession;
     try {
         if (session->parent != nullptr) {
@@ -152,6 +155,25 @@ void* objectAddress(const ::zl::Value* value, bool& valid) {
     return object == nullptr ? nullptr : object->get();
 }
 } // namespace
+
+extern "C" std::uintptr_t zl_native_resolve_method(void* address,
+                                                       std::uint64_t dispatchId) noexcept {
+    try {
+        ::zl::ObjectRef object;
+        if (!objectForAddress(address, object) || activeSession == nullptr ||
+            activeSession->dispatchResolver == nullptr) {
+            failActiveRuntimeHelper();
+            return 0;
+        }
+        const std::uintptr_t target = activeSession->dispatchResolver(
+            activeSession->userData, object->className.c_str(), dispatchId);
+        if (target == 0) failActiveRuntimeHelper();
+        return target;
+    } catch (...) {
+        failActiveRuntimeHelper();
+        return 0;
+    }
+}
 
 extern "C" void* zl_native_alloc_object(std::uint64_t stringIndex) noexcept {
     try {
