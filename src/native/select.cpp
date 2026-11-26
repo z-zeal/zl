@@ -589,11 +589,157 @@ private:
                 return;
             }
 
+            case Opcode::InvokeStatic:
+            case Opcode::InvokeSuper:
+                if (!ins.typeArguments.empty())
+                    refuse("generic static/super method calls are outside the native subset", ins.location);
+                selectCall(block, ins);
+                return;
+
+            case Opcode::InvokeMethod:
+                selectMethodCall(block, ins);
+                return;
+
             default:
                 refuse(std::string("MIR opcode ") + opcodeName(ins.opcode) +
                            " is outside the native subset (runs on the VM)",
                        ins.location);
         }
+    }
+
+    bool derivesFrom(const std::string& className, const std::string& baseName) const {
+        std::unordered_set<std::string> visited;
+        std::string current = className;
+        while (!current.empty()) {
+            if (current == baseName) return true;
+            if (!visited.insert(current).second) return false;
+            const ClassLayout* layout = mir_.classLayout(current);
+            if (layout == nullptr) return false;
+            current = layout->parent;
+        }
+        return false;
+    }
+
+    FunctionId implementationForClass(const ClassLayout& runtimeClass,
+                                      const Instruction& call) const {
+        std::vector<const ClassLayout*> hierarchy;
+        if (!nativeClassLayoutChain(runtimeClass.name, hierarchy)) return kNoFunction;
+        for (auto layout = hierarchy.rbegin(); layout != hierarchy.rend(); ++layout) {
+            FunctionId match = kNoFunction;
+            for (const Function& candidate : mir_.functions) {
+                if (candidate.ownerClass != (*layout)->name || !candidate.hasThisParameter ||
+                    candidate.isStatic || candidate.isConstructor || candidate.isGenericTemplate ||
+                    !candidate.methodTypeParameters.empty() || candidate.isAsync ||
+                    candidate.declaredName() != call.target.methodName ||
+                    candidate.parameters.size() != call.target.argumentTypes.size() + 1 ||
+                    candidate.returnType != call.target.resultType)
+                    continue;
+                bool signatureMatches = true;
+                for (std::size_t i = 0; i < call.target.argumentTypes.size(); ++i) {
+                    if (candidate.parameters[i + 1].type != call.target.argumentTypes[i]) {
+                        signatureMatches = false;
+                        break;
+                    }
+                }
+                if (!signatureMatches) continue;
+                if (match != kNoFunction) return kNoFunction;
+                match = candidate.id;
+            }
+            if (match != kNoFunction) return match;
+        }
+        return kNoFunction;
+    }
+
+    void selectMethodCall(LirBlock& block, const Instruction& ins) {
+        if (!ins.typeArguments.empty())
+            refuse("generic virtual method calls are outside the native subset", ins.location);
+        const Type* receiverType = ins.operands.empty() ? nullptr : mir_.types.find(ins.operands[0].type);
+        if (receiverType == nullptr || receiverType->kind != TypeKind::Object ||
+            !receiverType->arguments.empty() || ins.target.className.empty() ||
+            receiverType->name != ins.target.className)
+            refuse("virtual method call has no supported concrete receiver class", ins.location);
+
+        FunctionId uniqueTarget = kNoFunction;
+        bool sawRuntimeClass = false;
+        std::vector<std::pair<std::string, FunctionId>> targets;
+        for (const ClassLayout& runtimeClass : mir_.classes) {
+            if (!derivesFrom(runtimeClass.name, ins.target.className)) continue;
+            sawRuntimeClass = true;
+            if (!runtimeClass.typeParameters.empty())
+                refuse("generic subclasses prevent a closed native dispatch target", ins.location);
+            std::vector<const ClassLayout*> hierarchy;
+            if (!nativeClassLayoutChain(runtimeClass.name, hierarchy))
+                refuse("class hierarchy is outside the native dispatch subset", ins.location);
+            const FunctionId implementation = implementationForClass(runtimeClass, ins);
+            if (implementation == kNoFunction)
+                refuse("no unique native implementation for method '" + ins.target.methodName + "'",
+                       ins.location);
+            if (implementation > mir_.functions.size())
+                refuse("virtual method target is outside the MIR function table", ins.location);
+            targets.emplace_back(runtimeClass.name, implementation);
+            if (uniqueTarget == kNoFunction) uniqueTarget = implementation;
+        }
+        if (!sawRuntimeClass || uniqueTarget == kNoFunction)
+            refuse("no closed native class set for virtual method '" + ins.target.methodName + "'",
+                   ins.location);
+
+        const bool hasOverrides = std::any_of(targets.begin(), targets.end(), [&](const auto& target) {
+            return target.second != uniqueTarget;
+        });
+        if (!hasOverrides) {
+            Instruction direct = ins;
+            direct.opcode = Opcode::Call;
+            direct.target.function = uniqueTarget;
+            selectCall(block, direct);
+            return;
+        }
+        if (!options_.allowRuntimeCalls)
+            refuse("dynamic method dispatch requires runtime support", ins.location);
+
+        // Resolve the runtime class through the active executable session, then
+        // call the matching native method body indirectly. Every possible body
+        // is recorded as a dependency so the native/VM boundary stays closed.
+        const std::uint64_t dispatchId = outModule_.nextDispatchId++;
+        for (const auto& [runtimeClass, implementation] : targets) {
+            const Function& target = mir_.functions[implementation - 1];
+            outModule_.dispatchTargets.push_back(
+                NativeDispatchTarget{dispatchId, runtimeClass, target.name});
+        }
+        const std::uint32_t line = static_cast<std::uint32_t>(ins.location.line);
+        LirInstruction resolve;
+        resolve.opcode = LirOpcode::CallRuntime;
+        resolve.callee = "__zl_native_resolve_method";
+        resolve.operands = {
+            inRegister(block, use(ins.operands[0], ins.location), ValueClass::Reference, line),
+            LirOperand::immediate(static_cast<std::int64_t>(dispatchId))};
+        resolve.argClasses = {ValueClass::Reference, ValueClass::Integer};
+        resolve.result = newVReg(ValueClass::Integer, "dispatch-target");
+        resolve.resultClass = ValueClass::Integer;
+        resolve.line = line;
+        const VReg targetAddress = resolve.result;
+        block.instructions.push_back(std::move(resolve));
+
+        LirInstruction call;
+        call.opcode = LirOpcode::CallIndirect;
+        call.calleeTarget = LirOperand::reg(targetAddress);
+        call.line = line;
+        call.callee = ins.target.methodName;
+        for (const Operand& argument : ins.operands) {
+            const ValueClass cls = classOf(argument);
+            call.operands.push_back(inRegister(block, use(argument, ins.location), cls, line));
+            call.argClasses.push_back(cls);
+        }
+        for (const auto& [runtimeClass, implementation] : targets) {
+            (void)runtimeClass;
+            call.possibleCallees.push_back(mir_.functions[implementation - 1].name);
+        }
+        const ValueClass resultClass = classify(ins.resultType);
+        if (ins.result != kNoTemp) {
+            call.result = newVReg(resultClass, "t" + std::to_string(ins.result));
+            call.resultClass = resultClass;
+            tempVReg_[ins.result] = call.result;
+        }
+        block.instructions.push_back(std::move(call));
     }
 
     void selectCall(LirBlock& block, const Instruction& ins) {
@@ -801,14 +947,27 @@ SelectionResult selectModule(const zl::mir::Module& module, const TargetMachine&
         for (std::size_t i = 0; i < result.module.functions.size();) {
             const LirFunction& fn = result.module.functions[i];
             std::string missing;
-            for (const auto& block : fn.blocks)
-                for (const auto& ins : block.instructions)
+            std::uint32_t missingLine = 0;
+            for (const auto& block : fn.blocks) {
+                for (const auto& ins : block.instructions) {
                     if (ins.opcode == LirOpcode::Call &&
-                        std::find(available.begin(), available.end(), ins.callee) == available.end())
+                        std::find(available.begin(), available.end(), ins.callee) == available.end()) {
                         missing = ins.callee;
+                        missingLine = ins.line;
+                    }
+                    if (ins.opcode == LirOpcode::CallIndirect) {
+                        for (const std::string& candidate : ins.possibleCallees)
+                            if (std::find(available.begin(), available.end(), candidate) == available.end()) {
+                                missing = candidate;
+                                missingLine = ins.line;
+                                break;
+                            }
+                    }
+                }
+            }
             if (missing.empty()) { ++i; continue; }
             result.rejected.push_back(
-                SelectionRejection{fn.name, "calls '" + missing + "', which is not in the native subset", 0});
+                SelectionRejection{fn.name, "calls '" + missing + "', which is not in the native subset", missingLine});
             result.lowered.erase(std::remove(result.lowered.begin(), result.lowered.end(), fn.name),
                                  result.lowered.end());
             result.module.functions.erase(result.module.functions.begin() + static_cast<long>(i));

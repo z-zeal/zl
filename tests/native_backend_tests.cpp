@@ -1496,6 +1496,126 @@ void testNativePlainClassFields() {
 #endif
 }
 
+void testNativeMonomorphicMethodCalls() {
+#if ZL_NATIVE_CAN_EXECUTE
+    bool ok = false;
+    Module module = lowerSource("NativeMethodProbe", R"(
+        class NativeMethodBase {
+            public int value = 4
+            public func read(): int {
+                return this.value
+            }
+        }
+        class NativeMethodDerived extends NativeMethodBase {
+            public func readThroughSuper(): int {
+                return super.read() + 1
+            }
+        }
+        class NativeOverrideBase {
+            public func answer(int seed): int { return seed + 1 }
+        }
+        class NativeOverrideDerived extends NativeOverrideBase {
+            @Override
+            public func answer(int seed): int { return seed + 2 }
+        }
+        class NativeMethodProbe {
+            static func plusOne(int value): int { return value + 1 }
+            static func inheritedMethod(): int {
+                var item = new NativeMethodDerived()
+                return item.read()
+            }
+            static func superMethod(): int {
+                var item = new NativeMethodDerived()
+                return item.readThroughSuper()
+            }
+            static func staticMethod(): int {
+                return NativeMethodProbe.plusOne(9)
+            }
+            static func polymorphic(NativeOverrideBase item): int {
+                return item.answer(40)
+            }
+            static func polymorphicBase(): int {
+                return NativeMethodProbe.polymorphic(new NativeOverrideBase())
+            }
+            static func polymorphicDerived(): int {
+                return NativeMethodProbe.polymorphic(new NativeOverrideDerived())
+            }
+        }
+    )", ok);
+    require(ok, "native method-call fixture lowers to verified MIR");
+    if (!ok) return;
+
+    auto compiled = compileMirToNative(module, x64SysVTarget());
+    require(compiled.ok(), "statically unique method calls select: " + compiled.error);
+    bool sawDynamicResolver = false;
+    for (const auto& imported : compiled.runtimeImports)
+        sawDynamicResolver = sawDynamicResolver || imported == "__zl_native_resolve_method";
+    require(sawDynamicResolver, "overridden virtual calls use the runtime resolver");
+    bool sawBaseTarget = false;
+    bool sawDerivedTarget = false;
+    for (const auto& target : compiled.lir.dispatchTargets) {
+        if (target.runtimeClass == "NativeOverrideBase" &&
+            target.function.find("NativeOverrideBase.answer") != std::string::npos)
+            sawBaseTarget = true;
+        if (target.runtimeClass == "NativeOverrideDerived" &&
+            target.function.find("NativeOverrideDerived.answer") != std::string::npos)
+            sawDerivedTarget = true;
+    }
+    require(sawBaseTarget && sawDerivedTarget, "dispatch metadata names both runtime overrides");
+    if (!compiled.ok() || compiled.code.empty()) return;
+
+    const auto emitted = emitModule(compiled.lir, x64SysVTarget());
+    require(emitted.success, "method calls re-emit: " + emitted.error);
+    if (!emitted.success) return;
+    NativeExecutable executable(emitted.functions, compiled.lir);
+    require(executable.ok(), "method-call executable binds: " + executable.error());
+    if (!executable.ok()) return;
+
+    auto runInt = [&](const std::string& name, std::int64_t expected) {
+        std::string error;
+        const std::size_t entry = executable.resolve(name, error);
+        require(entry != NativeExecutable::kNoEntry, name + " resolves: " + error);
+        if (entry == NativeExecutable::kNoEntry) return;
+        std::int64_t result = -1;
+        require(executable.callInt64(entry, {}, result, error), name + " executes: " + error);
+        require(result == expected, name + " returns " + std::to_string(expected));
+    };
+    runInt("inheritedMethod", 4);
+    runInt("superMethod", 5);
+    runInt("staticMethod", 10);
+    runInt("polymorphicBase", 41);
+    runInt("polymorphicDerived", 42);
+
+    bool refusalLowers = false;
+    Module refusalModule = lowerSource("NativeDispatchRefusal", R"(
+        class DispatchBase {
+            public func value(): int { return 1 }
+        }
+        class DispatchDerived extends DispatchBase {
+            string text = "unsupported layout field"
+            @Override
+            public func value(): int { return this.text.length() }
+        }
+        class NativeDispatchRefusal {
+            static func invoke(DispatchBase receiver): int { return receiver.value() }
+        }
+    )", refusalLowers);
+    require(refusalLowers, "unsupported dispatch fixture lowers");
+    if (refusalLowers) {
+        const auto refusal = compileMirToNative(refusalModule, x64SysVTarget());
+        require(refusal.ok(), "unsupported override produces a partial native result");
+        bool callerRefused = false;
+        for (const auto& entry : refusal.vmFunctions) {
+            if (entry.function.find("NativeDispatchRefusal.invoke") == std::string::npos) continue;
+            callerRefused = true;
+            require(entry.reason.find("not in the native subset") != std::string::npos,
+                    "virtual caller fails closed when an override body is unavailable");
+        }
+        require(callerRefused, "caller with an unavailable runtime target is refused");
+    }
+#endif
+}
+
 void testUnsupportedProgramDegrades() {
     bool ok = false;
     Module module = lowerSource("Greeter", R"(
@@ -1533,6 +1653,7 @@ int main() {
     testNativeSafepointRootPublication();
     testNativeDataRecordFields();
     testNativePlainClassFields();
+    testNativeMonomorphicMethodCalls();
 #endif
     testUnverifiedMirIsRefused();
     testNoEncoderIsSelectOnly();

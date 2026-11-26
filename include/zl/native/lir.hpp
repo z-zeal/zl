@@ -192,6 +192,9 @@ enum class LirOpcode : std::uint16_t {
     // lower yet, and it must be greppable.
     Call,
     CallRuntime,
+    // Indirect call through a runtime-resolved method target. `calleeTarget`
+    // contains the executable address; `operands` remain the ABI arguments.
+    CallIndirect,
 
     // Terminators.
     Jump,
@@ -221,6 +224,11 @@ struct LirInstruction {
     // emitter can assign argument registers without re-deriving them.
     std::string callee;
     std::vector<ValueClass> argClasses;
+    // CallIndirect only: executable target address, stored in a vreg.
+    LirOperand calleeTarget;
+    // Indirect calls depend on every possible implementation remaining native;
+    // pipeline closure rejects the caller if any candidate is refused.
+    std::vector<std::string> possibleCallees;
     // Source line, carried through from MIR so a native fault can be blamed on
     // ZL source.
     std::uint32_t line{0};
@@ -254,9 +262,17 @@ struct LirFunction {
     void rebuildCfg();
 };
 
+struct NativeDispatchTarget {
+    std::uint64_t dispatchId{0};
+    std::string runtimeClass;
+    std::string function;
+};
+
 struct LirModule {
     std::string name;
     std::vector<LirFunction> functions;
+    std::vector<NativeDispatchTarget> dispatchTargets;
+    std::uint64_t nextDispatchId{1};
     // Runtime helpers referenced by CallRuntime, deduplicated. The linker/JIT
     // resolves these; listing them makes "what did this module fall back on?"
     // answerable without scanning the code.

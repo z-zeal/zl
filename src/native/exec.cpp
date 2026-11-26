@@ -6,6 +6,8 @@
 #include <utility>
 
 extern "C" void* zl_native_alloc_object(std::uint64_t stringIndex) noexcept;
+extern "C" std::uintptr_t zl_native_resolve_method(void* object,
+                                                       std::uint64_t dispatchId) noexcept;
 extern "C" std::int64_t zl_native_field_load_i(void* object, std::uint64_t stringIndex) noexcept;
 extern "C" double zl_native_field_load_f(void* object, std::uint64_t stringIndex) noexcept;
 extern "C" void* zl_native_field_load_r(void* object, std::uint64_t stringIndex) noexcept;
@@ -145,6 +147,13 @@ NativeExecutable::NativeExecutable(const std::vector<EmittedFunction>& functions
         return 0;
     };
     std::vector<std::string> unbound;
+    for (const NativeDispatchTarget& dispatch : lir.dispatchTargets) {
+        const std::uintptr_t target = find(dispatch.function);
+        if (target != 0)
+            virtualTargets_[dispatch.dispatchId][dispatch.runtimeClass] = target;
+    }
+    runtime["__zl_native_resolve_method"] =
+        reinterpret_cast<std::uintptr_t>(&zl_native_resolve_method);
     for (std::size_t i = 0; i < functions.size(); ++i) {
         for (const auto& reloc : functions[i].relocations) {
             std::uintptr_t target = 0;
@@ -227,6 +236,16 @@ const char* NativeExecutable::nativeRuntimeString(void* userData,
     return self.runtimeStrings_[static_cast<std::size_t>(stringIndex)].c_str();
 }
 
+std::uintptr_t NativeExecutable::nativeDispatchTarget(void* userData, const char* runtimeClass,
+                                                       std::uint64_t dispatchId) noexcept {
+    if (runtimeClass == nullptr) return 0;
+    const auto& self = *static_cast<const NativeExecutable*>(userData);
+    const auto dispatch = self.virtualTargets_.find(dispatchId);
+    if (dispatch == self.virtualTargets_.end()) return 0;
+    const auto target = dispatch->second.find(runtimeClass);
+    return target == dispatch->second.end() ? 0 : target->second;
+}
+
 std::size_t NativeExecutable::resolve(const std::string& spec, std::string& error) const {
     for (std::size_t i = 0; i < names_.size(); ++i)
         if (names_[i] == spec) return i;
@@ -301,7 +320,8 @@ bool NativeExecutable::callInt64(std::size_t e, const std::vector<std::int64_t>&
     }
     auto* session = beginNativeGcSession(const_cast<NativeExecutable*>(this),
                                          &NativeExecutable::nativeFrameAddresses,
-                                         &NativeExecutable::nativeRuntimeString);
+                                         &NativeExecutable::nativeRuntimeString,
+                                         &NativeExecutable::nativeDispatchTarget);
     if (session == nullptr) {
         error = "native execution driver: could not register GC safepoint session";
         return false;
@@ -341,7 +361,8 @@ bool NativeExecutable::callDouble(std::size_t e, const std::vector<double>& args
     // exactly what the SysV calling convention allows.
     auto* session = beginNativeGcSession(const_cast<NativeExecutable*>(this),
                                          &NativeExecutable::nativeFrameAddresses,
-                                         &NativeExecutable::nativeRuntimeString);
+                                         &NativeExecutable::nativeRuntimeString,
+                                         &NativeExecutable::nativeDispatchTarget);
     if (session == nullptr) {
         error = "native execution driver: could not register GC safepoint session";
         return false;
@@ -379,7 +400,8 @@ bool NativeExecutable::callReference(std::size_t e, const std::vector<std::uintp
     }
     auto* session = beginNativeGcSession(const_cast<NativeExecutable*>(this),
                                          &NativeExecutable::nativeFrameAddresses,
-                                         &NativeExecutable::nativeRuntimeString);
+                                         &NativeExecutable::nativeRuntimeString,
+                                         &NativeExecutable::nativeDispatchTarget);
     if (session == nullptr) {
         error = "native execution driver: could not register GC safepoint session";
         return false;

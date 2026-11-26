@@ -18,12 +18,16 @@ using NativeFrameAddressProvider = std::vector<const void*> (*)(
     void* userData, const std::vector<NativeFrameRecord>& frames);
 using NativeRuntimeStringProvider = const char* (*)(void* userData,
                                                     std::uint64_t stringIndex) noexcept;
+using NativeDispatchResolver = std::uintptr_t (*)(void* userData,
+                                                   const char* runtimeClass,
+                                                   std::uint64_t dispatchId) noexcept;
 
 struct NativeGcSession;
 
 [[nodiscard]] NativeGcSession* beginNativeGcSession(
     void* userData, NativeFrameAddressProvider provider,
-    NativeRuntimeStringProvider stringProvider);
+    NativeRuntimeStringProvider stringProvider,
+    NativeDispatchResolver dispatchResolver = nullptr);
 [[nodiscard]] bool nativeGcSessionFailed(const NativeGcSession* session) noexcept;
 void endNativeGcSession(NativeGcSession* session) noexcept;
 

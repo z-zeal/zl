@@ -178,10 +178,14 @@ Two decisions worth stating:
   allocated through the GC-aware bridge when their constructors are natively
   selectable. Their int, bool, double and nested-object fields are accessed
   through typed helpers; class fields receive VM-compatible defaults before
-  base-to-derived constructor initialization. Equality, concatenation, dynamic
-  dispatch, exceptions, and unsupported inheritance/constructor operations
-  remain refused. Every bridge call publishes frame
-  roots before a pending collection.
+  base-to-derived constructor initialization. Direct static/super calls and
+  virtual calls are selectable, including runtime overrides across known
+  non-generic class layouts, when every possible target body is native. Calls
+  with unsupported layouts or unavailable target bodies fail closed; a runtime
+  class outside the executable's dispatch table traps rather than calling the
+  wrong implementation. Equality, concatenation, exceptions, and unsupported
+  inheritance/constructor operations remain refused. Every bridge call
+  publishes frame roots before a pending collection.
   Details are in
   [native-gc-map.md](native-gc-map.md).
 
@@ -315,16 +319,17 @@ the VM. A backend that guesses at an operation it does not implement is worse
 than one that admits it.
 
 Refusal also propagates: a function the subset accepted, which calls one it
-refused, is itself dropped — there would be no native body to jump to. This is
-iterated to a fixed point, so the surviving native set is closed under calls.
+refused or has a virtual-call site whose possible target was refused, is itself
+dropped — there would be no native body to jump to. This is iterated to a fixed
+point, so the surviving native set is closed under direct and virtual calls.
 
 Currently refused, each with its own message: reference equality and
-concatenation; field operations outside non-generic `data` records; general
-class allocation, constructors, and dynamic/method dispatch; strings as
-constants, collections, closures and lambdas, generic templates, `switch`,
-`throw` and exception handlers, async and tasks, static fields, non-GC ownership
-contracts, arguments beyond the register set, and branches into blocks with
-parameters (which need a split critical edge).
+concatenation; field operations outside non-generic `data` records and simple
+classes; unsupported constructors or virtual targets; runtime classes outside
+the compiled dispatch set; strings as constants, collections, closures and
+lambdas, generic templates, `switch`, `throw` and exception handlers, async and
+tasks, static fields, non-GC ownership contracts, arguments beyond the register
+set, and branches into blocks with parameters (which need a split critical edge).
 
 ## Runtime calls
 
@@ -378,8 +383,10 @@ roots. The regression forces collection after a runtime helper allocates and
 checks the object survives solely through its native spill. The driver executes
 non-generic data records and simple non-generic single-inheritance class
 hierarchies with natively selectable constructors and field initializers, typed
-fields, zero-value initialization, and nested references. Remaining P1-6 work
-includes dynamic method dispatch and the broader mixed-mode path, not root
+fields, zero-value initialization, and nested references. Runtime method
+dispatch across the compiled class layouts is now exercised with base and
+derived overrides; unavailable target bodies fail closed. Remaining P1-6 work
+includes the broader mixed-mode path and collection acceptance program, not root
 publication.
 See [native-gc-map.md](native-gc-map.md).
 
@@ -407,16 +414,20 @@ including the NaN cases, two-way branches, a counted loop through mutable slots,
 a cross-function direct call, division edge cases, reference carry, end-to-end
 allocation and field reads/writes for non-generic data records and simple
 classes (including nested references surviving forced collection, class defaults,
-field-initializer/constructor execution, and base-first initialization), refusal
-of unsupported object shapes and callers whose callees were refused, refusal of
-MIR that does not verify, and real ZL source lowered through the real front end.
+field-initializer/constructor execution, and base-first initialization), execution
+of direct static/super and inherited method calls, runtime dispatch selecting
+base and derived overrides, refusal propagation when a possible override body
+is unavailable, unsupported object shapes and callers whose callees were
+refused, refusal of MIR that does not verify, and real ZL source lowered through
+the real front end.
 
 ## What is deliberately missing
 
 Named so that no one has to discover them by reading the code: register
 allocation and stack argument passing; generic/unsupported inheritance layouts
-and dynamic method dispatch (the supported class subset is non-generic, has no
-shadowed instance fields, and requires every constructor/initializer operation
+and open-world dispatch for runtime classes outside the compiled class set (the
+supported class subset is non-generic, has no shadowed instance fields, and
+requires every constructor/initializer operation and possible dispatch target
 to be natively selectable); unwind tables
 (hence an arithmetic fault in natively executed code is a SIGILL trap, not a catchable
 `ArithmeticError` — the VM remains the tier where those are catchable); string

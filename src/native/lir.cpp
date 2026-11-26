@@ -48,6 +48,7 @@ const char* lirOpcodeName(LirOpcode op) noexcept {
         case LirOpcode::FrameAddr: return "frameaddr";
         case LirOpcode::Call: return "call";
         case LirOpcode::CallRuntime: return "call.runtime";
+        case LirOpcode::CallIndirect: return "call.indirect";
         case LirOpcode::Jump: return "jump";
         case LirOpcode::BranchIf: return "branch";
         case LirOpcode::Return: return "ret";
@@ -68,13 +69,15 @@ bool lirOpcodeIsTerminator(LirOpcode op) noexcept {
 
 bool lirOpcodeMayTrap(LirOpcode op) noexcept {
     // Integer division and remainder trap on a zero divisor (and on
-    // INT64_MIN / -1). The emitter must materialise those checks; recording
-    // the fact here keeps an optimiser from hoisting one out of its guard.
-    return op == LirOpcode::IDiv || op == LirOpcode::IMod || op == LirOpcode::Unreachable;
+    // INT64_MIN / -1). Indirect calls can trap when runtime dispatch returns
+    // no target. The emitter materialises those guards; recording the fact here
+    // keeps an optimiser from hoisting one out of its guard.
+    return op == LirOpcode::IDiv || op == LirOpcode::IMod || op == LirOpcode::Unreachable ||
+           op == LirOpcode::CallIndirect;
 }
 
 bool lirOpcodeIsCall(LirOpcode op) noexcept {
-    return op == LirOpcode::Call || op == LirOpcode::CallRuntime;
+    return op == LirOpcode::Call || op == LirOpcode::CallRuntime || op == LirOpcode::CallIndirect;
 }
 
 const VRegInfo* LirFunction::vreg(VReg id) const {
@@ -170,6 +173,14 @@ std::string printLirFunction(const LirFunction& function) {
             if (!ins.callee.empty()) out << " @" << ins.callee;
             for (std::size_t i = 0; i < ins.operands.size(); ++i)
                 out << (i == 0 && ins.callee.empty() ? " " : ", ") << operandText(function, ins.operands[i]);
+            if (ins.opcode == LirOpcode::CallIndirect)
+                out << " via " << operandText(function, ins.calleeTarget);
+            if (!ins.possibleCallees.empty()) {
+                out << " targets{";
+                for (std::size_t i = 0; i < ins.possibleCallees.size(); ++i)
+                    out << (i ? ", " : "") << ins.possibleCallees[i];
+                out << "}";
+            }
             if (!ins.comment.empty()) out << "   ; " << ins.comment;
             out << "\n";
         }
@@ -188,6 +199,9 @@ std::string printLirModule(const LirModule& module) {
     }
     for (std::size_t i = 0; i < module.runtimeStrings.size(); ++i)
         out << "; runtime string[" << i << "] = \"" << module.runtimeStrings[i] << "\"\n";
+    for (const auto& target : module.dispatchTargets)
+        out << "; dispatch[" << target.dispatchId << "] " << target.runtimeClass
+            << " -> " << target.function << "\n";
     for (const auto& fn : module.functions) out << "\n" << printLirFunction(fn);
     return out.str();
 }
