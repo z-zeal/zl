@@ -1,5 +1,15 @@
 # Development Checkpoints
 
+## 2026-11-22 - support simple single-inheritance object layouts natively
+
+Native object selection now walks supported class hierarchies base-first,
+materializes each class's default fields, and accepts direct base-constructor
+calls. Generic layouts and repeated instance-field names across the hierarchy
+are refused rather than being mapped onto ambiguous string-keyed storage. The
+ZL regression verifies base initialization runs before the derived initializer
+and body, and forces collection inside the base constructor while the derived
+object remains rooted.
+
 ## 2026-11-22 - execute native-lowerable class initialization and constructors
 
 The native class slice now selects field initializer code and constructor bodies

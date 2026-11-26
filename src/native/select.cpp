@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "zl/mir/type.hpp"
 
@@ -69,11 +70,35 @@ private:
 
     ValueClass classify(std::uint32_t typeId) const { return classifyType(mir_, typeId); }
 
+    bool nativeClassLayoutChain(const std::string& className,
+                                std::vector<const ClassLayout*>& baseToDerived) const {
+        baseToDerived.clear();
+        std::unordered_set<std::string> visited;
+        std::string current = className;
+        while (!current.empty()) {
+            if (!visited.insert(current).second) return false;
+            const ClassLayout* layout = mir_.classLayout(current);
+            if (layout == nullptr || layout->isData || layout->isEnum ||
+                !layout->typeParameters.empty()) return false;
+            baseToDerived.push_back(layout);
+            current = layout->parent;
+        }
+        std::reverse(baseToDerived.begin(), baseToDerived.end());
+
+        std::unordered_set<std::string> instanceFields;
+        for (const ClassLayout* layout : baseToDerived) {
+            for (const FieldLayout& field : layout->fields) {
+                if (field.isStatic) continue;
+                if (!instanceFields.insert(field.name).second) return false;
+            }
+        }
+        return !baseToDerived.empty();
+    }
+
     bool supportedNativeConstructor(const Function& function) const {
         if (!function.isConstructor || function.ownerClass.empty()) return false;
-        const ClassLayout* layout = mir_.classLayout(function.ownerClass);
-        return layout != nullptr && !layout->isData && layout->parent.empty() &&
-               layout->typeParameters.empty();
+        std::vector<const ClassLayout*> hierarchy;
+        return nativeClassLayoutChain(function.ownerClass, hierarchy);
     }
 
     // References may be carried through values and used only in the narrow
@@ -324,18 +349,22 @@ private:
         const ClassLayout* layout = mir_.classLayout(type->name);
         if (layout == nullptr || !layout->typeParameters.empty() || layout->isEnum) return false;
         if (layout->isData) return true;
-        if (!layout->parent.empty()) return false;
-        const auto constructor = std::find_if(mir_.functions.begin(), mir_.functions.end(),
-            [&](const Function& function) {
-                return function.isConstructor && function.ownerClass == layout->name;
-            });
-        return constructor != mir_.functions.end() && supportedNativeConstructor(*constructor);
+        std::vector<const ClassLayout*> hierarchy;
+        if (!nativeClassLayoutChain(layout->name, hierarchy)) return false;
+        for (const ClassLayout* item : hierarchy) {
+            const auto constructor = std::find_if(mir_.functions.begin(), mir_.functions.end(),
+                [&](const Function& function) {
+                    return function.isConstructor && function.ownerClass == item->name;
+                });
+            if (constructor == mir_.functions.end() || !supportedNativeConstructor(*constructor)) return false;
+        }
+        return true;
     }
 
     void requireNativeObject(std::uint32_t typeId, const SourceLocation& location,
                              const std::string& operation) const {
         if (!supportedNativeObjectType(typeId))
-            refuse(operation + " requires a non-generic data record or a non-inherited class",
+            refuse(operation + " requires a non-generic data record or a supported non-generic class hierarchy",
                    location);
     }
 
@@ -379,13 +408,18 @@ private:
         if (layout == nullptr) refuse("allocation has no class layout", mirIns.location);
         const bool isPlainClass = !layout->isData;
         const std::uint32_t line = static_cast<std::uint32_t>(mirIns.location.line);
+        std::vector<const ClassLayout*> classHierarchy;
+        if (isPlainClass && !nativeClassLayoutChain(mirIns.className, classHierarchy))
+            refuse("class inheritance layout is outside the native object subset", mirIns.location);
 
         if (isPlainClass) {
-            for (const FieldLayout& field : layout->fields) {
-                if (field.isStatic) continue;
-                if (!supportedNativeFieldType(field.type))
-                    refuse("class field '" + field.name + "' has a type outside the native object subset",
-                           layout->location);
+            for (const ClassLayout* classLayout : classHierarchy) {
+                for (const FieldLayout& field : classLayout->fields) {
+                    if (field.isStatic) continue;
+                    if (!supportedNativeFieldType(field.type))
+                        refuse("class field '" + field.name + "' has a type outside the native object subset",
+                               classLayout->location);
+                }
             }
         }
 
@@ -406,15 +440,17 @@ private:
         // These stores are runtime calls too: the just-allocated object remains
         // in the native frame map across every helper/safepoint.
         if (isPlainClass) {
-            for (const FieldLayout& field : layout->fields) {
-                if (field.isStatic) continue;
-                const Type* type = mir_.types.find(field.type);
-                const ValueClass cls = classify(field.type);
-                const LirOperand defaultValue = cls == ValueClass::Float ? LirOperand::immediateF(0.0)
-                    : cls == ValueClass::Reference ? LirOperand::immediate(0)
-                    : LirOperand::immediate(0);
-                appendFieldStore(block, LirOperand::reg(object), field.name, cls, defaultValue,
-                                 type != nullptr && type->kind == TypeKind::Bool, line);
+            for (const ClassLayout* classLayout : classHierarchy) {
+                for (const FieldLayout& field : classLayout->fields) {
+                    if (field.isStatic) continue;
+                    const Type* type = mir_.types.find(field.type);
+                    const ValueClass cls = classify(field.type);
+                    const LirOperand defaultValue = cls == ValueClass::Float ? LirOperand::immediateF(0.0)
+                        : cls == ValueClass::Reference ? LirOperand::immediate(0)
+                        : LirOperand::immediate(0);
+                    appendFieldStore(block, LirOperand::reg(object), field.name, cls, defaultValue,
+                                     type != nullptr && type->kind == TypeKind::Bool, line);
+                }
             }
         }
     }

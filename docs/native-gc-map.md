@@ -5,12 +5,12 @@ arguments and results. Calls now pass through a driver bridge that registers
 each active native frame, polls the safepoint coordinator, and publishes typed
 roots from emitted frame maps. Explicitly bound `CallRuntime` helpers can
 allocate, and a forced-collection regression proves a native-only root keeps
-such an object alive. Non-generic data records and simple non-inherited classes
-with native-lowerable constructors use that bridge for allocation and typed
-primitive or nested-object fields; class fields receive VM-compatible defaults
-before supported initializer/constructor code runs. Inheritance, dynamic method
-behavior, exceptions, and unsupported initializer operations remain outside the
-subset.
+such an object alive. Non-generic data records and simple non-generic single-
+inheritance classes without shadowed instance fields use that bridge for
+allocation and typed primitive or nested-object fields; class fields receive
+VM-compatible defaults before supported base-to-derived initializer/constructor
+code runs. Dynamic method behavior, exceptions, generic inheritance, and
+unsupported initializer operations remain outside the subset.
 
 This document records the native root model, frame metadata, conservative
 call-site maps, the live runtime bridge, and the remaining steps to make
@@ -36,7 +36,7 @@ Selection keeps that distinction honest in one direction only:
 | | |
 | --- | --- |
 | **Carried** | a parameter, a local slot, a block parameter, a return value, a call argument, a call result — moved, stored, loaded, returned |
-| **Used** | arithmetic, comparison, equality, general class fields/methods, `new`, constants — non-generic data records and simple non-inherited classes with native-lowerable constructors support typed fields |
+| **Used** | arithmetic, comparison, equality, general class fields/methods, `new`, constants — non-generic data records and simple non-generic single-inheritance classes without field shadowing support typed fields |
 
 Carrying is in (2026-11-22). Using remains narrow and refused by name, per
 function, with the MIR opcode and source line: arithmetic/equality refuse
@@ -99,8 +99,9 @@ The first allocation-and-publication path is live as one bundled milestone.
 The ordering is intentional: runtime allocation is not accepted independently
 of root publication, because each newly allocated reference must survive a
 collection at a later native safepoint. Non-generic data records and simple
-classes now exercise this path. Remaining work is inheritance layout, dynamic method dispatch,
-exceptions/unsupported constructor operations, and mixed-mode execution.
+class hierarchies now exercise this path. Remaining work is generic/unsupported
+inheritance layouts, dynamic method dispatch, exceptions/unsupported constructor
+operations, and mixed-mode execution.
 
 ## Phases
 
@@ -182,11 +183,11 @@ integrated path rather than claiming liveness precision.
 
 ### Phase 6b — simple class fields · **landed 2026-11-22**
 
-Non-generic classes with no inheritance allocate through the same bridge.
-Primitive and nested supported-object fields use typed field helpers; all
-supported fields receive VM-compatible zero defaults. The default stores are
-safepointed calls, so the new object stays rooted while its layout is
-initialized.
+Non-generic class hierarchies with unique instance-field names allocate through
+the same bridge. Class fields are initialized base-first; primitive and nested
+supported-object fields use typed field helpers and receive VM-compatible zero
+defaults. The default stores are safepointed calls, so the new object stays
+rooted while its layout is initialized.
 
 ### Phase 6c — native-lowerable field initializers and constructors · **landed 2026-11-22**
 
@@ -199,14 +200,16 @@ inside a constructor while the receiver is rooted in both caller and callee
 frames.
 
 **Gate:** `testNativePlainClassFields` checks primitive defaults, a field
-initializer plus constructor body, and nested class fields across forced
-collection. It complements `testNativeDataRecordFields` rather than replacing
-its data-literal coverage.
+initializer plus constructor body, base-before-derived initialization, and
+nested class fields across forced collection—including collection during the
+base constructor. It complements `testNativeDataRecordFields` rather than
+replacing its data-literal coverage.
 
-### Phase 6d — inheritance, dynamic methods, and mixed mode · **open**
+### Phase 6d — dynamic methods and mixed mode · **open**
 
-Inheritance layout, dynamic method dispatch, exceptions/unsupported constructor
-operations, and full-program native execution remain. This is where
+Generic/unsupported inheritance layouts, dynamic method dispatch,
+exceptions/unsupported constructor operations, and full-program native
+execution remain. This is where
 `docs/memory-domains.md` and ownership work start to matter.
 
 **Gate:** a named program with heap objects and collections runs end-to-end
