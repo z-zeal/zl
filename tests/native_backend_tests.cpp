@@ -1314,6 +1314,12 @@ void testNativePlainClassFields() {
         class NativeHolder {
             public NativeCounter child
         }
+        class NativeInitializedCounter {
+            public int value = 5
+            func NativeInitializedCounter(int delta) {
+                this.value = this.value + delta
+            }
+        }
         class NativeClassProbe {
             static func defaultInteger(): int {
                 var counter = new NativeCounter()
@@ -1333,6 +1339,10 @@ void testNativePlainClassFields() {
                 child.value = 67
                 holder.child = child
                 return holder.child.value
+            }
+            static func initializedClassField(): int {
+                var counter = new NativeInitializedCounter(3)
+                return counter.value
             }
         }
     )", ok);
@@ -1367,6 +1377,33 @@ void testNativePlainClassFields() {
     }
     require(pressureInserted, "plain-class field test forces collection before nested load");
     if (!pressureInserted) return;
+
+    LirFunction* constructor = nullptr;
+    for (auto& fn : compiled.lir.functions)
+        if (fn.name.find("NativeInitializedCounter") != std::string::npos &&
+            fn.parameters.size() == 2) constructor = &fn;
+    require(constructor != nullptr, "initialized class constructor is selected natively");
+    bool constructorPressureInserted = false;
+    if (constructor != nullptr) {
+        for (auto& block : constructor->blocks) {
+            auto store = std::find_if(block.instructions.begin(), block.instructions.end(),
+                [](const LirInstruction& ins) {
+                    return ins.opcode == LirOpcode::CallRuntime &&
+                           ins.callee == "__zl_native_field_store_i";
+                });
+            if (store == block.instructions.end()) continue;
+            LirInstruction pressure;
+            pressure.opcode = LirOpcode::CallRuntime;
+            pressure.callee = "test.gc.pressure";
+            pressure.line = store->line;
+            block.instructions.insert(store, std::move(pressure));
+            constructorPressureInserted = true;
+            break;
+        }
+    }
+    require(constructorPressureInserted,
+            "constructor test forces collection while running field initialization");
+    if (!constructorPressureInserted) return;
     if (std::find(compiled.lir.runtimeImports.begin(), compiled.lir.runtimeImports.end(),
                   "test.gc.pressure") == compiled.lir.runtimeImports.end())
         compiled.lir.runtimeImports.push_back("test.gc.pressure");
@@ -1395,6 +1432,10 @@ void testNativePlainClassFields() {
     runInt("nestedClassField", 67);
     require(TracingGC::instance().counters().collections > collectionsBefore,
             "nested class reference survives forced collection through its parent");
+    const auto collectionsBeforeConstructor = TracingGC::instance().counters().collections;
+    runInt("initializedClassField", 8);
+    require(TracingGC::instance().counters().collections > collectionsBeforeConstructor,
+            "class object stays rooted through constructor field initialization and body");
 
     std::string error;
     const std::size_t doubleEntry = executable.resolve("defaultDouble", error);
