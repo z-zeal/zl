@@ -186,6 +186,8 @@ std::string printLirModule(const LirModule& module) {
         for (const auto& r : module.runtimeImports) out << " " << r;
         out << "\n";
     }
+    for (std::size_t i = 0; i < module.runtimeStrings.size(); ++i)
+        out << "; runtime string[" << i << "] = \"" << module.runtimeStrings[i] << "\"\n";
     for (const auto& fn : module.functions) out << "\n" << printLirFunction(fn);
     return out.str();
 }

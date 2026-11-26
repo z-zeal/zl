@@ -5,6 +5,18 @@
 #include <stdexcept>
 #include <utility>
 
+extern "C" void* zl_native_alloc_data_record(std::uint64_t stringIndex) noexcept;
+extern "C" std::int64_t zl_native_field_load_i(void* object, std::uint64_t stringIndex) noexcept;
+extern "C" double zl_native_field_load_f(void* object, std::uint64_t stringIndex) noexcept;
+extern "C" void* zl_native_field_load_r(void* object, std::uint64_t stringIndex) noexcept;
+extern "C" void zl_native_field_store_i(void* object, std::uint64_t stringIndex,
+                                          std::uint64_t isBoolean,
+                                          std::int64_t value) noexcept;
+extern "C" void zl_native_field_store_f(void* object, std::uint64_t stringIndex,
+                                          double value) noexcept;
+extern "C" void zl_native_field_store_r(void* object, std::uint64_t stringIndex,
+                                          void* value) noexcept;
+
 #if defined(__unix__) && !defined(__APPLE__) && defined(__x86_64__)
 #include <sys/mman.h>
 #define ZL_NATIVE_EXEC_POSIX_MMAP 1
@@ -79,6 +91,7 @@ NativeExecutable::NativeExecutable(const std::vector<EmittedFunction>& functions
         returnClasses_.push_back(fn.returnClass);
         frameMetadata_.push_back(FrameMetadata{fn.frameLocations, fn.safepoints});
     }
+    runtimeStrings_ = lir.runtimeStrings;
 
     // One page-sized run per function keeps every entry point page-aligned and
     // every inter-function rel32 reachable through the arena (same layout the
@@ -112,6 +125,20 @@ NativeExecutable::NativeExecutable(const std::vector<EmittedFunction>& functions
     NativeRuntimeBindings runtime = runtimeBindings;
     runtime["__zl_native_safepoint_enter"] = detail::safepointEnterAddress();
     runtime["__zl_native_safepoint_leave"] = detail::safepointLeaveAddress();
+    runtime["__zl_native_alloc_data_record"] =
+        reinterpret_cast<std::uintptr_t>(&zl_native_alloc_data_record);
+    runtime["__zl_native_field_load_i"] =
+        reinterpret_cast<std::uintptr_t>(&zl_native_field_load_i);
+    runtime["__zl_native_field_load_f"] =
+        reinterpret_cast<std::uintptr_t>(&zl_native_field_load_f);
+    runtime["__zl_native_field_load_r"] =
+        reinterpret_cast<std::uintptr_t>(&zl_native_field_load_r);
+    runtime["__zl_native_field_store_i"] =
+        reinterpret_cast<std::uintptr_t>(&zl_native_field_store_i);
+    runtime["__zl_native_field_store_f"] =
+        reinterpret_cast<std::uintptr_t>(&zl_native_field_store_f);
+    runtime["__zl_native_field_store_r"] =
+        reinterpret_cast<std::uintptr_t>(&zl_native_field_store_r);
     auto find = [&](const std::string& symbol) -> std::uintptr_t {
         for (std::size_t i = 0; i < names_.size(); ++i)
             if (names_[i] == symbol) return entries_[i];
@@ -193,6 +220,13 @@ std::vector<const void*> NativeExecutable::nativeFrameAddresses(
     return addresses;
 }
 
+const char* NativeExecutable::nativeRuntimeString(void* userData,
+                                                  std::uint64_t stringIndex) noexcept {
+    const auto& self = *static_cast<const NativeExecutable*>(userData);
+    if (stringIndex >= self.runtimeStrings_.size()) return nullptr;
+    return self.runtimeStrings_[static_cast<std::size_t>(stringIndex)].c_str();
+}
+
 std::size_t NativeExecutable::resolve(const std::string& spec, std::string& error) const {
     for (std::size_t i = 0; i < names_.size(); ++i)
         if (names_[i] == spec) return i;
@@ -266,7 +300,8 @@ bool NativeExecutable::callInt64(std::size_t e, const std::vector<std::int64_t>&
         return false;
     }
     auto* session = beginNativeGcSession(const_cast<NativeExecutable*>(this),
-                                         &NativeExecutable::nativeFrameAddresses);
+                                         &NativeExecutable::nativeFrameAddresses,
+                                         &NativeExecutable::nativeRuntimeString);
     if (session == nullptr) {
         error = "native execution driver: could not register GC safepoint session";
         return false;
@@ -276,7 +311,7 @@ bool NativeExecutable::callInt64(std::size_t e, const std::vector<std::int64_t>&
     for (std::size_t i = 0; i < args.size(); ++i) a[i] = args[i];
     result = reinterpret_cast<EntryFn>(entries_[e])(a[0], a[1], a[2], a[3], a[4], a[5]);
     if (nativeGcSessionFailed(session)) {
-        error = "native execution driver: safepoint root publication failed";
+        error = "native execution driver: runtime bridge or root publication failed";
         return false;
     }
     return true;
@@ -305,7 +340,8 @@ bool NativeExecutable::callDouble(std::size_t e, const std::vector<double>& args
     // Six XMM argument registers exist; passing padding in unused ones is
     // exactly what the SysV calling convention allows.
     auto* session = beginNativeGcSession(const_cast<NativeExecutable*>(this),
-                                         &NativeExecutable::nativeFrameAddresses);
+                                         &NativeExecutable::nativeFrameAddresses,
+                                         &NativeExecutable::nativeRuntimeString);
     if (session == nullptr) {
         error = "native execution driver: could not register GC safepoint session";
         return false;
@@ -315,7 +351,7 @@ bool NativeExecutable::callDouble(std::size_t e, const std::vector<double>& args
     for (std::size_t i = 0; i < args.size(); ++i) a[i] = args[i];
     result = reinterpret_cast<DoubleFn>(entries_[e])(a[0], a[1], a[2], a[3], a[4], a[5]);
     if (nativeGcSessionFailed(session)) {
-        error = "native execution driver: safepoint root publication failed";
+        error = "native execution driver: runtime bridge or root publication failed";
         return false;
     }
     return true;
@@ -342,7 +378,8 @@ bool NativeExecutable::callReference(std::size_t e, const std::vector<std::uintp
         return false;
     }
     auto* session = beginNativeGcSession(const_cast<NativeExecutable*>(this),
-                                         &NativeExecutable::nativeFrameAddresses);
+                                         &NativeExecutable::nativeFrameAddresses,
+                                         &NativeExecutable::nativeRuntimeString);
     if (session == nullptr) {
         error = "native execution driver: could not register GC safepoint session";
         return false;
@@ -354,7 +391,7 @@ bool NativeExecutable::callReference(std::size_t e, const std::vector<std::uintp
         a[0], a[1], a[2], a[3], a[4], a[5]);
     result = reinterpret_cast<std::uintptr_t>(value);
     if (nativeGcSessionFailed(session)) {
-        error = "native execution driver: safepoint root publication failed";
+        error = "native execution driver: runtime bridge or root publication failed";
         return false;
     }
     return true;

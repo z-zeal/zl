@@ -16,11 +16,14 @@ struct NativeFrameRecord {
 // making the native backend depend on VM Value or GC types.
 using NativeFrameAddressProvider = std::vector<const void*> (*)(
     void* userData, const std::vector<NativeFrameRecord>& frames);
+using NativeRuntimeStringProvider = const char* (*)(void* userData,
+                                                    std::uint64_t stringIndex) noexcept;
 
 struct NativeGcSession;
 
 [[nodiscard]] NativeGcSession* beginNativeGcSession(
-    void* userData, NativeFrameAddressProvider provider);
+    void* userData, NativeFrameAddressProvider provider,
+    NativeRuntimeStringProvider stringProvider);
 [[nodiscard]] bool nativeGcSessionFailed(const NativeGcSession* session) noexcept;
 void endNativeGcSession(NativeGcSession* session) noexcept;
 

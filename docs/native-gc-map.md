@@ -5,8 +5,9 @@ arguments and results. Calls now pass through a driver bridge that registers
 each active native frame, polls the safepoint coordinator, and publishes typed
 roots from emitted frame maps. Explicitly bound `CallRuntime` helpers can
 allocate, and a forced-collection regression proves a native-only root keeps
-such an object alive. Language-level object construction and field access remain
-outside the implemented subset.
+such an object alive. Non-generic data-record literals and their primitive or
+nested-record fields now use that bridge. General class construction,
+constructors, and dynamic field/method behavior remain outside the subset.
 
 This document records the native root model, frame metadata, conservative
 call-site maps, the live runtime bridge, and the remaining steps to make
@@ -32,7 +33,7 @@ Selection keeps that distinction honest in one direction only:
 | | |
 | --- | --- |
 | **Carried** | a parameter, a local slot, a block parameter, a return value, a call argument, a call result — moved, stored, loaded, returned |
-| **Used** | arithmetic, comparison, equality, field access, method calls, `new`, constants — everything that would need the runtime or the object layout |
+| **Used** | arithmetic, comparison, equality, general class fields/methods, `new`, constants — only non-generic data-record allocation and typed fields are in the native subset |
 
 Carrying is in (2026-11-22). Using is refused by name, per function, with the
 MIR opcode and the source line — `selectBinary` and `Neg` refuse references
@@ -40,10 +41,10 @@ explicitly, and everything else falls through to the default arm of
 `selectInstruction`.
 
 That boundary is the load-bearing fact for the phases below: reference carry
-alone does not create an allocation operation. But explicitly bound runtime
-helpers can allocate, so allocation and native root publication must be
-introduced together; otherwise the next safepoint could reclaim an object still
-held by a native frame.
+alone does not create an allocation operation. The native data-record subset
+now allocates and accesses fields through runtime helpers, so its allocation
+and native root publication are one delivered unit; otherwise a later
+safepoint could reclaim an object still held by a native frame.
 
 ## What a GC map is
 
@@ -89,13 +90,14 @@ references its GC map says are live at the safepoint it is parked at.
 | Frame layout | `FunctionEmitter::layoutFrame` (`src/native/emit.cpp`) | exported as `EmittedFunction::frameLocations`, including LIR slots and vreg spills |
 | Conservative call-site maps | `EmittedFunction::safepoints` | exported by CALL opcode byte offset; includes every reference location |
 | Safepoint coordinator | `src/vm/gc_safepoint.cpp` | exists, used by the VM |
-| Driver | `src/native/exec.cpp` | registers a participant per call, bridges each emitted call through safepoint polling, resolves raw frame addresses to typed GC roots, and supports typed borrowed reference entry |
+| Driver/runtime bridge | `src/native/exec.cpp`, `src/vm/native_gc_bridge.cpp` | registers a participant per call, publishes native roots at safepoints, binds data-record alloc/field helpers, and supports typed borrowed reference entry |
 
 The first allocation-and-publication path is live as one bundled milestone.
 The ordering is intentional: runtime allocation is not accepted independently
 of root publication, because each newly allocated reference must survive a
-collection at a later native safepoint. Remaining work is language-level object
-allocation and layout, field operations, and mixed-mode execution.
+collection at a later native safepoint. Non-generic data records now exercise
+this path. Remaining work is general class initialization/layout, constructors,
+field defaults, dynamic methods, and mixed-mode execution.
 
 ## Phases
 
@@ -159,16 +161,32 @@ allocates past the GC threshold. The next native call polls and collects while
 the only root to the object is the native frame; the test verifies the object
 survives and is returned unchanged.
 
-### Phase 6 — objects, fields, and the rest
+### Phase 6a — non-generic data records · **landed 2026-11-22**
 
-With references carried, allocation real and roots published, field access and
-object layout stop being theoretical. This is the phase that makes the native
-tier a candidate backend rather than a demonstration, and it is where
-`docs/memory-domains.md` and the ownership work start to matter.
+Data literals allocate GC-managed `ObjectBox` instances through the internal
+runtime bridge. Field loads and stores support `int`, `bool`, `double`, and
+nested non-generic data records. Class/field names travel through the LIR's
+runtime-string table; helpers validate object addresses against the managed
+allocation registry and store fields through the VM's tracing-aware object
+field accessors. Constructors, field defaults for ordinary classes, inheritance
+layout and dynamic dispatch remain refused.
+
+**Gate:** `testNativeDataRecordFields` compiles real ZL source, executes
+integer/bool/double field accesses and nested records, and forces collection
+between writing and reading a nested field while the parent record remains in
+the native frame. The maps are deliberately conservative, so this checks the
+integrated path rather than claiming liveness precision.
+
+### Phase 6b — general classes, constructors, and mixed mode · **open**
+
+General class object layout, constructor/default-field initialization, method
+dispatch, and full-program native execution remain. This is where
+`docs/memory-domains.md` and ownership work start to matter.
 
 **Gate:** a named program with a heap object runs end-to-end through
 `--backend native` with a measured wall time against the VM — P1-6's original
-done-when.
+done-when. The data-record runtime slice above is progress toward, not a
+replacement for, that acceptance criterion.
 
 ## Risks
 
@@ -196,7 +214,8 @@ done-when.
 | 2 | exported offsets match the emitted displacements; all slots and spills are represented | `testEmittedFrameMap` in `tests/native_backend_tests.cpp` |
 | 3 | conservative roots cover all reference locations; two call sites are keyed by opcode offset | `testEmittedFrameMap` in `tests/native_backend_tests.cpp` |
 | 4 + 5 | a runtime-allocated object survives forced collection with its only root in native spills | `testNativeSafepointRootPublication` in `tests/native_backend_tests.cpp` |
-| 6 | a named program runs native end-to-end, measured | `tests/native_exec_parity.py`, `research/report.md` |
+| 6a | data-record fields execute; nested records survive forced collection | `testNativeDataRecordFields` in `tests/native_backend_tests.cpp` |
+| 6b | a named program runs native end-to-end, measured | `tests/native_exec_parity.py`, `research/report.md` |
 
 Every phase also carries the standing gates: `ctest -C Release`, the
 regression fixtures, the examples byte-compared, and the native gate

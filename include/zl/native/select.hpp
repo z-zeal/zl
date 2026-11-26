@@ -40,12 +40,15 @@
 //   * Load/Store of primitive slots;
 //   * Jump, Branch, Return, Unreachable;
 //   * direct Call to another function that is itself in the subset, plus
-//     CallRuntime for anything explicitly routed to the runtime.
+//     CallRuntime for explicitly routed runtime operations;
+//   * allocation and named field access for non-generic data records, through
+//     the GC-aware runtime bridge, with int/bool/double and nested data-record
+//     fields.
 //
-// Everything else - references, objects, strings, collections, closures,
-// exceptions, async, ownership events - is refused. Reference *values* are
-// refused rather than treated as integers, because an untracked reference is
-// exactly the failure mode that cannot be diagnosed after the fact.
+// Everything else - general classes/constructors, strings, collections,
+// closures, equality, dynamic dispatch, exceptions, async, and ownership
+// events - is refused. References are never treated as integers: supported
+// data-record references are tracked by the collector at native safepoints.
 
 namespace zl::native {
 
