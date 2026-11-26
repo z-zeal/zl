@@ -1,5 +1,17 @@
 # Development Checkpoints
 
+## 2026-11-22 - add a bounded native class-object slice
+
+Native allocation and typed field helpers now also cover non-generic classes
+without inheritance and with empty/trivial constructors. The selector materializes
+class fields' primitive zero defaults using GC-aware runtime stores, then permits
+int/bool/double and nested supported-object field reads and writes. Since every
+default store is a safepointed runtime call, the newly allocated object remains
+published in the native frame map during initialization. `testNativePlainClassFields`
+checks zero defaults and forces collection before reading a nested class field.
+Field initializer expressions, nontrivial constructors, inheritance, dynamic
+method dispatch, and mixed-mode execution remain open.
+
 ## 2026-11-22 - execute non-generic data records in the native tier
 
 Instruction selection now lowers data-record allocation and typed field loads
@@ -10,7 +22,8 @@ VM's tracing-aware field accessors. The backend test executes real ZL source
 covering primitive and nested fields, then forces collection between nested
 field storage and load with the parent still rooted in a native frame. The
 maps remain conservative; this test checks the integrated path, not liveness
-precision. General class constructors/layout, field defaults, and dynamic
+precision. A later checkpoint adds simple classes with trivial constructors;
+general class initialization/layout, nontrivial constructors and dynamic
 dispatch remain open.
 
 ## 2026-11-22 - publish native frame roots across runtime allocations

@@ -173,12 +173,14 @@ Two decisions worth stating:
 * **Unknown fails closed toward `Reference`.** A type the mapping does not
   recognise is classified as a managed reference, never as an integer.
 * **`Reference` is carried and narrowly used.** References move through
-  parameters, locals, calls and returns. Non-generic `data` records can be
-  allocated from record literals and their int, bool, double, and nested
-  data-record fields can be loaded and stored through the GC-aware runtime
-  bridge. Other uses — equality, concatenation, general-class fields, methods
-  and dynamic dispatch — remain refused. Every bridge call publishes frame
-  roots before a pending collection. Details are in
+  parameters, locals, calls and returns. Non-generic `data` records and simple
+  non-inherited classes with trivial constructors can be allocated through the
+  GC-aware bridge. Their int, bool, double and nested-object fields are loaded
+  and stored through typed helpers; plain class fields also receive VM-compatible
+  zero defaults. Other uses — equality, concatenation, field initializers,
+  nontrivial constructors, inheritance and dynamic method dispatch — remain
+  refused. Every bridge call publishes frame roots before a pending collection.
+  Details are in
   [native-gc-map.md](native-gc-map.md).
 
 ## Calling convention
@@ -371,10 +373,12 @@ table, and non-x86-64-Linux hosts. The per-call bridge registers an active
 native frame and polls the GC coordinator; on collection, frame-map addresses
 are resolved against the managed allocation registry and published as typed
 roots. The regression forces collection after a runtime helper allocates and
-checks the object survives solely through its native spill. The driver now
-also executes non-generic data-record literals and field operations; remaining
-P1-6 work is general class initialization/layout, methods and the broader
-mixed-mode path, not root publication. See [native-gc-map.md](native-gc-map.md).
+checks the object survives solely through its native spill. The driver executes
+non-generic data records and simple non-inherited classes with trivial
+constructors, typed fields, zero-value initialization, and nested references.
+Remaining P1-6 work includes field initializers, nontrivial constructors,
+inheritance, methods, and the broader mixed-mode path, not root publication.
+See [native-gc-map.md](native-gc-map.md).
 
 ## Tests
 
@@ -398,17 +402,18 @@ It covers the calling-convention invariants, the value-class mapping (including
 that unknown fails closed), integer and float arithmetic, all comparisons
 including the NaN cases, two-way branches, a counted loop through mutable slots,
 a cross-function direct call, division edge cases, reference carry, end-to-end
-allocation and field reads/writes for non-generic data records (including nested
-records surviving forced collection), refusal of unsupported record shapes and
-of callers whose callees were refused, refusal of MIR that does not verify, and
-real ZL source lowered through the real front end.
+allocation and field reads/writes for non-generic data records and simple
+classes (including nested references surviving forced collection and class
+primitive defaults), refusal of unsupported object shapes and callers whose
+callees were refused, refusal of MIR that does not verify, and real ZL source
+lowered through the real front end.
 
 ## What is deliberately missing
 
 Named so that no one has to discover them by reading the code: register
-allocation and stack argument passing; general class construction, constructors,
-field defaults, inheritance layouts and dynamic method dispatch (the supported
-object subset is non-generic data records); unwind tables (hence an arithmetic
+allocation and stack argument passing; field initializers, nontrivial constructors,
+inheritance layouts and dynamic method dispatch (the supported class subset has
+no inheritance or constructor body); unwind tables (hence an arithmetic
 fault in natively executed code is a SIGILL trap, not a catchable
 `ArithmeticError` — the VM remains the tier where those are catchable); string
 and collection operations, closures, generic instantiation, jump tables for

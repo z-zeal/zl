@@ -5,9 +5,11 @@ arguments and results. Calls now pass through a driver bridge that registers
 each active native frame, polls the safepoint coordinator, and publishes typed
 roots from emitted frame maps. Explicitly bound `CallRuntime` helpers can
 allocate, and a forced-collection regression proves a native-only root keeps
-such an object alive. Non-generic data-record literals and their primitive or
-nested-record fields now use that bridge. General class construction,
-constructors, and dynamic field/method behavior remain outside the subset.
+such an object alive. Non-generic data records and simple non-inherited classes
+with trivial constructors use that bridge for allocation and typed primitive or
+nested-object fields; class primitive fields receive zero defaults. Field
+initializers, nontrivial constructors, inheritance, and dynamic method behavior
+remain outside the subset.
 
 This document records the native root model, frame metadata, conservative
 call-site maps, the live runtime bridge, and the remaining steps to make
@@ -33,17 +35,17 @@ Selection keeps that distinction honest in one direction only:
 | | |
 | --- | --- |
 | **Carried** | a parameter, a local slot, a block parameter, a return value, a call argument, a call result — moved, stored, loaded, returned |
-| **Used** | arithmetic, comparison, equality, general class fields/methods, `new`, constants — only non-generic data-record allocation and typed fields are in the native subset |
+| **Used** | arithmetic, comparison, equality, general class fields/methods, `new`, constants — non-generic data records and simple non-inherited classes with trivial constructors support typed fields |
 
-Carrying is in (2026-11-22). Using is refused by name, per function, with the
-MIR opcode and the source line — `selectBinary` and `Neg` refuse references
-explicitly, and everything else falls through to the default arm of
-`selectInstruction`.
+Carrying is in (2026-11-22). Using remains narrow and refused by name, per
+function, with the MIR opcode and source line: arithmetic/equality refuse
+references explicitly, while allocation and the supported field operations
+are handled through the managed-object bridge.
 
 That boundary is the load-bearing fact for the phases below: reference carry
-alone does not create an allocation operation. The native data-record subset
-now allocates and accesses fields through runtime helpers, so its allocation
-and native root publication are one delivered unit; otherwise a later
+alone does not create an allocation operation. The data-record and simple-class
+subsets allocate and access fields through runtime helpers, so allocation and
+native root publication remain one coupled capability; otherwise a later
 safepoint could reclaim an object still held by a native frame.
 
 ## What a GC map is
@@ -90,14 +92,15 @@ references its GC map says are live at the safepoint it is parked at.
 | Frame layout | `FunctionEmitter::layoutFrame` (`src/native/emit.cpp`) | exported as `EmittedFunction::frameLocations`, including LIR slots and vreg spills |
 | Conservative call-site maps | `EmittedFunction::safepoints` | exported by CALL opcode byte offset; includes every reference location |
 | Safepoint coordinator | `src/vm/gc_safepoint.cpp` | exists, used by the VM |
-| Driver/runtime bridge | `src/native/exec.cpp`, `src/vm/native_gc_bridge.cpp` | registers a participant per call, publishes native roots at safepoints, binds data-record alloc/field helpers, and supports typed borrowed reference entry |
+| Driver/runtime bridge | `src/native/exec.cpp`, `src/vm/native_gc_bridge.cpp` | registers a participant per call, publishes native roots at safepoints, binds object alloc/field helpers, and supports typed borrowed reference entry |
 
 The first allocation-and-publication path is live as one bundled milestone.
 The ordering is intentional: runtime allocation is not accepted independently
 of root publication, because each newly allocated reference must survive a
-collection at a later native safepoint. Non-generic data records now exercise
-this path. Remaining work is general class initialization/layout, constructors,
-field defaults, dynamic methods, and mixed-mode execution.
+collection at a later native safepoint. Non-generic data records and simple
+classes now exercise this path. Remaining work is field-initializer expressions,
+nontrivial constructors, inheritance layout, dynamic method dispatch, and
+mixed-mode execution.
 
 ## Phases
 
@@ -177,15 +180,29 @@ between writing and reading a nested field while the parent record remains in
 the native frame. The maps are deliberately conservative, so this checks the
 integrated path rather than claiming liveness precision.
 
-### Phase 6b — general classes, constructors, and mixed mode · **open**
+### Phase 6b — simple class fields · **landed 2026-11-22**
 
-General class object layout, constructor/default-field initialization, method
-dispatch, and full-program native execution remain. This is where
+Non-generic classes with no inheritance and an empty/trivial constructor can
+allocate through the same bridge. Primitive and nested supported-object fields
+use the typed field helpers; primitive defaults match the VM (`0`, `0.0`, and
+`false`). The generated default stores are themselves safepointed calls, so the
+new object stays rooted while its layout is initialized. Field initializers,
+nontrivial constructors, inheritance, and methods remain refused.
+
+**Gate:** `testNativePlainClassFields` verifies primitive defaults, nested class
+fields, and collection while the child is reachable through the parent. It
+complements `testNativeDataRecordFields` rather than replacing its data-literal
+coverage.
+
+### Phase 6c — complete class execution and mixed mode · **open**
+
+Field-initializer expressions, nontrivial constructors, inheritance layout,
+method dispatch, and full-program native execution remain. This is where
 `docs/memory-domains.md` and ownership work start to matter.
 
-**Gate:** a named program with a heap object runs end-to-end through
-`--backend native` with a measured wall time against the VM — P1-6's original
-done-when. The data-record runtime slice above is progress toward, not a
+**Gate:** a named program with heap objects and collections runs end-to-end
+through `--backend native` with a measured wall time against the VM — P1-6's
+original done-when. The supported object slices above are progress toward, not a
 replacement for, that acceptance criterion.
 
 ## Risks

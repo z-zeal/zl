@@ -153,7 +153,7 @@ void* objectAddress(const ::zl::Value* value, bool& valid) {
 }
 } // namespace
 
-extern "C" void* zl_native_alloc_data_record(std::uint64_t stringIndex) noexcept {
+extern "C" void* zl_native_alloc_object(std::uint64_t stringIndex) noexcept {
     try {
         const char* className = activeRuntimeString(stringIndex);
         if (className == nullptr || activeSession == nullptr) {

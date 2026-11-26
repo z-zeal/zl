@@ -1302,6 +1302,112 @@ void testNativeDataRecordFields() {
 #endif
 }
 
+void testNativePlainClassFields() {
+#if ZL_NATIVE_CAN_EXECUTE
+    bool ok = false;
+    Module module = lowerSource("NativeClassProbe", R"(
+        class NativeCounter {
+            public int value
+            public double ratio
+            public bool enabled
+        }
+        class NativeHolder {
+            public NativeCounter child
+        }
+        class NativeClassProbe {
+            static func defaultInteger(): int {
+                var counter = new NativeCounter()
+                return counter.value
+            }
+            static func defaultBoolean(): bool {
+                var counter = new NativeCounter()
+                return counter.enabled
+            }
+            static func defaultDouble(): double {
+                var counter = new NativeCounter()
+                return counter.ratio
+            }
+            static func nestedClassField(): int {
+                var holder = new NativeHolder()
+                var child = new NativeCounter()
+                child.value = 67
+                holder.child = child
+                return holder.child.value
+            }
+        }
+    )", ok);
+    require(ok, "native plain-class fixture lowers to verified MIR");
+    if (!ok) return;
+
+    auto compiled = compileMirToNative(module, x64SysVTarget());
+    require(compiled.ok(), "trivial-constructor class fields select and emit: " + compiled.error);
+    if (!compiled.ok() || compiled.code.empty()) return;
+
+    LirFunction* nested = nullptr;
+    for (auto& fn : compiled.lir.functions)
+        if (fn.name.find("nestedClassField") != std::string::npos) nested = &fn;
+    require(nested != nullptr, "nestedClassField is selected natively");
+    bool pressureInserted = false;
+    if (nested != nullptr) {
+        for (auto& block : nested->blocks) {
+            auto load = std::find_if(block.instructions.begin(), block.instructions.end(),
+                [](const LirInstruction& ins) {
+                    return ins.opcode == LirOpcode::CallRuntime &&
+                           ins.callee == "__zl_native_field_load_i";
+                });
+            if (load == block.instructions.end()) continue;
+            LirInstruction pressure;
+            pressure.opcode = LirOpcode::CallRuntime;
+            pressure.callee = "test.gc.pressure";
+            pressure.line = load->line;
+            block.instructions.insert(load, std::move(pressure));
+            pressureInserted = true;
+            break;
+        }
+    }
+    require(pressureInserted, "plain-class field test forces collection before nested load");
+    if (!pressureInserted) return;
+    if (std::find(compiled.lir.runtimeImports.begin(), compiled.lir.runtimeImports.end(),
+                  "test.gc.pressure") == compiled.lir.runtimeImports.end())
+        compiled.lir.runtimeImports.push_back("test.gc.pressure");
+
+    const auto emitted = emitModule(compiled.lir, x64SysVTarget());
+    require(emitted.success, "plain-class operations re-emit with forced collection: " + emitted.error);
+    if (!emitted.success) return;
+    NativeRuntimeBindings bindings;
+    bindings["test.gc.pressure"] = reinterpret_cast<std::uintptr_t>(&nativeGcPressure);
+    NativeExecutable executable(emitted.functions, compiled.lir, bindings);
+    require(executable.ok(), "plain-class runtime helpers bind: " + executable.error());
+    if (!executable.ok()) return;
+
+    auto runInt = [&](const std::string& name, std::int64_t expected) {
+        std::string error;
+        const std::size_t entry = executable.resolve(name, error);
+        require(entry != NativeExecutable::kNoEntry, name + " resolves: " + error);
+        if (entry == NativeExecutable::kNoEntry) return;
+        std::int64_t result = -1;
+        require(executable.callInt64(entry, {}, result, error), name + " executes: " + error);
+        require(result == expected, name + " returns " + std::to_string(expected));
+    };
+    runInt("defaultInteger", 0);
+    runInt("defaultBoolean", 0);
+    const auto collectionsBefore = TracingGC::instance().counters().collections;
+    runInt("nestedClassField", 67);
+    require(TracingGC::instance().counters().collections > collectionsBefore,
+            "nested class reference survives forced collection through its parent");
+
+    std::string error;
+    const std::size_t doubleEntry = executable.resolve("defaultDouble", error);
+    require(doubleEntry != NativeExecutable::kNoEntry, "defaultDouble resolves: " + error);
+    if (doubleEntry != NativeExecutable::kNoEntry) {
+        double result = -1.0;
+        require(executable.callDouble(doubleEntry, {}, result, error),
+                "defaultDouble executes: " + error);
+        require(result == 0.0, "uninitialized double class fields default to zero");
+    }
+#endif
+}
+
 void testUnsupportedProgramDegrades() {
     bool ok = false;
     Module module = lowerSource("Greeter", R"(
@@ -1338,6 +1444,7 @@ int main() {
     testReferencePassThrough();
     testNativeSafepointRootPublication();
     testNativeDataRecordFields();
+    testNativePlainClassFields();
 #endif
     testUnverifiedMirIsRefused();
     testNoEncoderIsSelectOnly();

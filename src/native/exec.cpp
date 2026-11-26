@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <utility>
 
-extern "C" void* zl_native_alloc_data_record(std::uint64_t stringIndex) noexcept;
+extern "C" void* zl_native_alloc_object(std::uint64_t stringIndex) noexcept;
 extern "C" std::int64_t zl_native_field_load_i(void* object, std::uint64_t stringIndex) noexcept;
 extern "C" double zl_native_field_load_f(void* object, std::uint64_t stringIndex) noexcept;
 extern "C" void* zl_native_field_load_r(void* object, std::uint64_t stringIndex) noexcept;
@@ -125,8 +125,8 @@ NativeExecutable::NativeExecutable(const std::vector<EmittedFunction>& functions
     NativeRuntimeBindings runtime = runtimeBindings;
     runtime["__zl_native_safepoint_enter"] = detail::safepointEnterAddress();
     runtime["__zl_native_safepoint_leave"] = detail::safepointLeaveAddress();
-    runtime["__zl_native_alloc_data_record"] =
-        reinterpret_cast<std::uintptr_t>(&zl_native_alloc_data_record);
+    runtime["__zl_native_alloc_object"] =
+        reinterpret_cast<std::uintptr_t>(&zl_native_alloc_object);
     runtime["__zl_native_field_load_i"] =
         reinterpret_cast<std::uintptr_t>(&zl_native_field_load_i);
     runtime["__zl_native_field_load_f"] =
