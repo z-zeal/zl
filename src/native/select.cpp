@@ -42,9 +42,8 @@ public:
         if (fn_.isAsync) refuse("async functions need a scheduler frame the native tier has no shape for", fn_.location);
         if (fn_.isLambda || !fn_.captures.empty()) refuse("closures need a capture environment layout", fn_.location);
         if (fn_.isGenericTemplate) refuse("generic templates are not instantiated by the native tier", fn_.location);
-        if (fn_.isConstructor)
-            refuse("constructors and general class initialization are outside the native data-record subset",
-                   fn_.location);
+        if (fn_.isConstructor && !trivialNativeConstructor(fn_))
+            refuse("nontrivial constructors are outside the native object subset", fn_.location);
 
         // The whole point of the pipeline: every fact below is read out of the
         // verified MIR. Nothing consults the AST or the type checker.
@@ -69,6 +68,16 @@ private:
     // --- classification ---------------------------------------------------
 
     ValueClass classify(std::uint32_t typeId) const { return classifyType(mir_, typeId); }
+
+    bool trivialNativeConstructor(const Function& function) const {
+        if (!function.isConstructor || function.ownerClass.empty()) return false;
+        const ClassLayout* layout = mir_.classLayout(function.ownerClass);
+        if (layout == nullptr || layout->isData || !layout->parent.empty() ||
+            !layout->typeParameters.empty() || function.blocks.size() != 1) return false;
+        const BasicBlock& entry = function.blocks.front();
+        return entry.id == function.entryBlock && entry.exceptionHandlers.empty() &&
+               entry.instructions.empty() && entry.terminator.kind == TerminatorKind::Return;
+    }
 
     // References may be carried through values and used only in the narrow
     // managed-object operations selected below. Every other reference use is
@@ -312,54 +321,114 @@ private:
         return outModule_.runtimeStrings.size() - 1;
     }
 
-    void requireNativeDataRecord(std::uint32_t typeId, const SourceLocation& location,
-                                 const std::string& operation) const {
+    bool supportedNativeObjectType(std::uint32_t typeId) const {
         const Type* type = mir_.types.find(typeId);
-        if (type == nullptr || type->kind != TypeKind::Object || !type->arguments.empty())
-            refuse(operation + " currently supports non-generic data records only", location);
+        if (type == nullptr || type->kind != TypeKind::Object || !type->arguments.empty()) return false;
         const ClassLayout* layout = mir_.classLayout(type->name);
-        if (layout == nullptr || !layout->isData || !layout->typeParameters.empty())
-            refuse(operation + " requires a non-generic data record", location);
+        if (layout == nullptr || !layout->typeParameters.empty() || layout->isEnum) return false;
+        if (layout->isData) return true;
+        if (!layout->parent.empty()) return false;
+        const auto constructor = std::find_if(mir_.functions.begin(), mir_.functions.end(),
+            [&](const Function& function) {
+                return function.isConstructor && function.ownerClass == layout->name;
+            });
+        return constructor != mir_.functions.end() && trivialNativeConstructor(*constructor);
     }
 
-    bool supportedDataFieldType(std::uint32_t typeId) const {
+    void requireNativeObject(std::uint32_t typeId, const SourceLocation& location,
+                             const std::string& operation) const {
+        if (!supportedNativeObjectType(typeId))
+            refuse(operation + " requires a non-generic data record or non-inherited class with a trivial constructor",
+                   location);
+    }
+
+    bool supportedNativeFieldType(std::uint32_t typeId) const {
         const Type* type = mir_.types.find(typeId);
         if (type == nullptr) return false;
         if (type->kind == TypeKind::Int || type->kind == TypeKind::Bool ||
             type->kind == TypeKind::Double) return true;
-        if (type->kind != TypeKind::Object || !type->arguments.empty()) return false;
-        const ClassLayout* layout = mir_.classLayout(type->name);
-        return layout != nullptr && layout->isData && layout->typeParameters.empty();
+        return supportedNativeObjectType(typeId);
+    }
+
+    void appendFieldStore(LirBlock& block, LirOperand object, const std::string& fieldName,
+                          ValueClass valueClass, LirOperand value, bool isBoolean,
+                          std::uint32_t line) {
+        const char* suffix = valueClass == ValueClass::Float ? "f" :
+                             valueClass == ValueClass::Reference ? "r" : "i";
+        LirInstruction call;
+        call.opcode = LirOpcode::CallRuntime;
+        call.callee = std::string("__zl_native_field_store_") + suffix;
+        call.operands = {object,
+            LirOperand::immediate(static_cast<std::int64_t>(internRuntimeString(fieldName)))};
+        call.argClasses = {ValueClass::Reference, ValueClass::Integer};
+        if (valueClass == ValueClass::Integer) {
+            call.operands.push_back(LirOperand::immediate(isBoolean ? 1 : 0));
+            call.argClasses.push_back(ValueClass::Integer);
+        }
+        call.operands.push_back(value);
+        call.argClasses.push_back(valueClass);
+        call.line = line;
+        block.instructions.push_back(std::move(call));
     }
 
     void selectAlloc(LirBlock& block, const Instruction& mirIns) {
         if (!options_.allowRuntimeCalls)
-            refuse("data-record allocation requires runtime calls", mirIns.location);
-        requireNativeDataRecord(mirIns.resultType, mirIns.location, "allocation");
+            refuse("managed object allocation requires runtime calls", mirIns.location);
+        requireNativeObject(mirIns.resultType, mirIns.location, "allocation");
         if (mirIns.className.empty()) refuse("allocation has no class name", mirIns.location);
         if (!mirIns.typeArguments.empty())
-            refuse("generic data-record allocation is not in the native subset", mirIns.location);
+            refuse("generic object allocation is not in the native subset", mirIns.location);
+        const ClassLayout* layout = mir_.classLayout(mirIns.className);
+        if (layout == nullptr) refuse("allocation has no class layout", mirIns.location);
+        const bool isPlainClass = !layout->isData;
+        const std::uint32_t line = static_cast<std::uint32_t>(mirIns.location.line);
+
+        if (isPlainClass) {
+            for (const FieldLayout& field : layout->fields) {
+                if (field.isStatic) continue;
+                if (!supportedNativeFieldType(field.type))
+                    refuse("class field '" + field.name + "' has a type outside the native object subset",
+                           layout->location);
+            }
+        }
 
         LirInstruction call;
         call.opcode = LirOpcode::CallRuntime;
-        call.callee = "__zl_native_alloc_data_record";
+        call.callee = "__zl_native_alloc_object";
         call.operands = {LirOperand::immediate(static_cast<std::int64_t>(
             internRuntimeString(mirIns.className)))};
         call.argClasses = {ValueClass::Integer};
         call.result = newVReg(ValueClass::Reference, "t" + std::to_string(mirIns.result));
         call.resultClass = ValueClass::Reference;
-        call.line = static_cast<std::uint32_t>(mirIns.location.line);
-        tempVReg_[mirIns.result] = call.result;
+        call.line = line;
+        const VReg object = call.result;
+        tempVReg_[mirIns.result] = object;
         block.instructions.push_back(std::move(call));
+
+        // Mirror the VM's zero-value defaults for trivial-constructor classes.
+        // These stores are runtime calls too: the just-allocated object remains
+        // in the native frame map across every helper/safepoint.
+        if (isPlainClass) {
+            for (const FieldLayout& field : layout->fields) {
+                if (field.isStatic) continue;
+                const Type* type = mir_.types.find(field.type);
+                const ValueClass cls = classify(field.type);
+                const LirOperand defaultValue = cls == ValueClass::Float ? LirOperand::immediateF(0.0)
+                    : cls == ValueClass::Reference ? LirOperand::immediate(0)
+                    : LirOperand::immediate(0);
+                appendFieldStore(block, LirOperand::reg(object), field.name, cls, defaultValue,
+                                 type != nullptr && type->kind == TypeKind::Bool, line);
+            }
+        }
     }
 
     void selectFieldLoad(LirBlock& block, const Instruction& mirIns) {
         if (!options_.allowRuntimeCalls)
-            refuse("data-record field access requires runtime calls", mirIns.location);
+            refuse("managed-object field access requires runtime calls", mirIns.location);
         if (mirIns.operands.empty()) refuse("field load has no receiver", mirIns.location);
-        requireNativeDataRecord(mirIns.operands[0].type, mirIns.location, "field access");
-        if (!supportedDataFieldType(mirIns.resultType))
-            refuse("field type is outside the native data-record subset", mirIns.location);
+        requireNativeObject(mirIns.operands[0].type, mirIns.location, "field access");
+        if (!supportedNativeFieldType(mirIns.resultType))
+            refuse("field type is outside the native object subset", mirIns.location);
         const ValueClass cls = classify(mirIns.resultType);
         const char* suffix = cls == ValueClass::Float ? "f" :
                              cls == ValueClass::Reference ? "r" : "i";
@@ -381,12 +450,12 @@ private:
 
     void selectFieldStore(LirBlock& block, const Instruction& mirIns) {
         if (!options_.allowRuntimeCalls)
-            refuse("data-record field access requires runtime calls", mirIns.location);
+            refuse("managed-object field access requires runtime calls", mirIns.location);
         if (mirIns.operands.size() < 2) refuse("field store has incomplete operands", mirIns.location);
-        requireNativeDataRecord(mirIns.operands[0].type, mirIns.location, "field access");
+        requireNativeObject(mirIns.operands[0].type, mirIns.location, "field access");
         const std::uint32_t valueType = mirIns.operands[1].type;
-        if (!supportedDataFieldType(valueType))
-            refuse("field type is outside the native data-record subset", mirIns.location);
+        if (!supportedNativeFieldType(valueType))
+            refuse("field type is outside the native object subset", mirIns.location);
         const ValueClass cls = classify(valueType);
         const char* suffix = cls == ValueClass::Float ? "f" :
                              cls == ValueClass::Reference ? "r" : "i";

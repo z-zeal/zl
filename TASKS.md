@@ -36,10 +36,10 @@ Priorities: **P0** produces a wrong result or refuses a valid program ·
 ## Start here
 
 Only the native line remains: P1-6, whose execution driver shipped 2026-09-20;
-reference carry, frame maps, runtime root publication, and the first non-generic
-data-record allocation/field slice are now in place. General class layout,
-constructors, dynamic dispatch and the broader mixed-mode path remain, followed
-by PF-3. Closed the same
+reference carry, frame maps, runtime root publication, non-generic data records,
+and simple non-inherited classes with trivial constructors are now in place.
+Field initializers, nontrivial constructors, inheritance, dynamic dispatch and
+the broader mixed-mode path remain, followed by PF-3. Closed the same
 day: P1-10 (stabilization gate - two fixtures, two written arguments, verdict
 in the [examples review](examples/REVIEW.md)), P2-5 (registry scope in
 [docs/packages.md](docs/packages.md)), and PF-1 + PF-2 at the re-measured
@@ -85,7 +85,7 @@ checker records the loop's numeric type and lowering uses it for its slots.
 
 ## P1 - promised capability, or a daily gap
 
-### P1-6 · Native backend: integers/doubles, rooted references, and a data-record slice
+### P1-6 · Native backend: integers/doubles, rooted references, and object slices
 
 **Driver (2026-09-20):** `zl --run-native <file.zl> [--call NAME] [--int64 v |
 --double v]... [--iters n]` maps the emitted module executable, binds
@@ -108,21 +108,24 @@ native-frame roots before collection can reclaim the new object. Every target
 call is wrapped by that bridge, which registers the frame, polls the coordinator,
 and resolves map addresses to typed GC roots. Unknown symbols fail closed.
 `NativeExecutable::callReference` exercises the borrowed-pointer shape, while
-the `--run-native` CLI still cannot invent pointers from scalar flags. The next
-slice now executes non-generic data-record literals and int/bool/double or
-nested-record fields. Equality, ordinary-class fields, constructors and dynamic
-methods remain refused. `testNativeDataRecordFields` forces collection between nested-field storage
-and load while the parent remains rooted in a native frame; the maps stay
-conservative. `testNativeSafepointRootPublication` and `testEmittedFrameMap`
-retain the underlying root-map gates. All live in `tests/native_backend_tests.cpp`; see
-[docs/native-gc-map.md](docs/native-gc-map.md).
+the `--run-native` CLI still cannot invent pointers from scalar flags. Native
+execution supports non-generic data records and simple non-inherited classes
+with empty/trivial constructors. Both support int/bool/double and nested object
+fields; classes also materialize VM-compatible primitive defaults. Equality,
+field initializers, nontrivial constructors, inheritance and dynamic methods
+remain refused. `testNativeDataRecordFields` and `testNativePlainClassFields`
+force collection during nested-field access while native frame roots keep the
+object graph alive; the maps stay conservative. `testNativeSafepointRootPublication`
+and `testEmittedFrameMap` retain the underlying root-map gates. All live in
+`tests/native_backend_tests.cpp`; see [docs/native-gc-map.md](docs/native-gc-map.md).
 
 **Remaining:**
 - The subset is still ~1.7% of the functions in a realistic module
   ([research/report.md](research/report.md) §2.7) - ints, floats, carried refs,
-  and non-generic data records with int/bool/double or nested-record fields;
-  general classes, constructors, collections, closures, exceptions and async
-  remain outside it. The driver calls homogeneous integer, double or
+  and non-generic data records plus simple non-inherited classes with trivial
+  constructors and int/bool/double or nested-object fields; field initializers,
+  nontrivial constructors, inheritance, collections, closures, exceptions and
+  async remain outside it. The driver calls homogeneous integer, double or
   borrowed-reference signatures and refuses mixed shapes by name.
 - In-program mixed mode is unimplemented: `--backend native` compiles the subset
   and still runs the program on the VM.
@@ -130,10 +133,10 @@ retain the underlying root-map gates. All live in `tests/native_backend_tests.cp
   `src/native/pipeline.cpp:59`); there is no arm64 encoder, so macOS CI
   cross-compiles to SysV.
 - No register allocator, no stack arguments, no unwind tables, no object-file
-  or JIT writer; general class construction, constructors, field defaults,
-  inheritance layouts and dynamic dispatch remain refused (only non-generic
-  data records are supported). The root bridge polls at calls, so call-free
-  loops can delay a rendezvous. See [docs/native-gc-map.md](docs/native-gc-map.md).
+  or JIT writer; field initializer expressions, nontrivial constructors,
+  inheritance layouts and dynamic dispatch remain refused (only simple classes
+  and non-generic data records are supported). The root bridge polls at calls,
+  so call-free loops can delay a rendezvous. See [docs/native-gc-map.md](docs/native-gc-map.md).
 - An arithmetic fault in driver-executed native bytes is `SIGILL`, not a
   catchable `ArithmeticError`.
 
