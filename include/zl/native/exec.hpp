@@ -35,8 +35,9 @@
 //     pretending.
 //
 // The refusal list is the current subset boundary made concrete. Reference
-// carry and safepoint root publication are supported by the typed API; object
-// allocation/layout and field operations remain the next P1-6 steps.
+// carry, safepoint root publication, and non-generic data-record allocation/
+// field operations are supported; general class initialization and dispatch
+// remain the next P1-6 steps.
 
 namespace zl::native {
 
@@ -100,6 +101,8 @@ private:
     };
     static std::vector<const void*> nativeFrameAddresses(
         void* userData, const std::vector<NativeFrameRecord>& frames);
+    static const char* nativeRuntimeString(void* userData,
+                                           std::uint64_t stringIndex) noexcept;
     bool ok_{false};
     std::string error_;
     void* base_{nullptr};
@@ -109,6 +112,7 @@ private:
     std::vector<std::vector<ValueClass>> parameterClasses_;
     std::vector<ValueClass> returnClasses_;
     std::vector<FrameMetadata> frameMetadata_;
+    std::vector<std::string> runtimeStrings_;
 };
 
 } // namespace zl::native

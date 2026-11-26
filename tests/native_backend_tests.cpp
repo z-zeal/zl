@@ -21,6 +21,7 @@
 #include "zl/native/pipeline.hpp"
 #include "zl/vm/gc.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -1190,6 +1191,117 @@ class Calc {
             "every function is accounted for as either native or VM");
 }
 
+void testNativeDataRecordFields() {
+#if ZL_NATIVE_CAN_EXECUTE
+    bool ok = false;
+    Module module = lowerSource("NativeRecordProbe", R"(
+        data NativePoint {
+            x: int
+            y: double
+            enabled: bool
+        }
+        data NativeInner {
+            value: int
+        }
+        data NativeOuter {
+            inner: NativeInner
+        }
+        class NativeRecordProbe {
+            static func integerField(): int {
+                var point = NativePoint { x: 42, y: 2.25, enabled: true }
+                return point.x
+            }
+            static func doubleField(): double {
+                var point = NativePoint { x: 0, y: 5.75, enabled: false }
+                return point.y
+            }
+            static func booleanField(): bool {
+                var point = NativePoint { x: 0, y: 0.0, enabled: true }
+                return point.enabled
+            }
+            static func nestedField(): int {
+                var outer = NativeOuter { inner: NativeInner { value: 53 } }
+                return outer.inner.value
+            }
+        }
+    )", ok);
+    require(ok, "native data-record fixture lowers to verified MIR");
+    if (!ok) return;
+
+    auto compiled = compileMirToNative(module, x64SysVTarget());
+    require(compiled.ok(), "data-record operations select and emit: " + compiled.error);
+    if (!compiled.ok() || compiled.code.empty()) return;
+
+    // Trigger a forced collection between storing a nested record reference and
+    // loading it again. The frame map is intentionally conservative, so this
+    // checks that nested field operations remain safe across a collection while
+    // the parent record is rooted in its native frame.
+    LirFunction* nested = nullptr;
+    for (auto& fn : compiled.lir.functions)
+        if (fn.name.find("nestedField") != std::string::npos) nested = &fn;
+    require(nested != nullptr, "nestedField is selected natively");
+    bool pressureInserted = false;
+    if (nested != nullptr) {
+        for (auto& block : nested->blocks) {
+            auto load = std::find_if(block.instructions.begin(), block.instructions.end(),
+                [](const LirInstruction& ins) {
+                    return ins.opcode == LirOpcode::CallRuntime &&
+                           ins.callee == "__zl_native_field_load_r";
+                });
+            if (load == block.instructions.end()) continue;
+            LirInstruction pressure;
+            pressure.opcode = LirOpcode::CallRuntime;
+            pressure.callee = "test.gc.pressure";
+            pressure.line = load->line;
+            block.instructions.insert(load, std::move(pressure));
+            pressureInserted = true;
+            break;
+        }
+    }
+    require(pressureInserted, "nested-field probe includes a collection-pressure call");
+    if (!pressureInserted) return;
+    if (std::find(compiled.lir.runtimeImports.begin(), compiled.lir.runtimeImports.end(),
+                  "test.gc.pressure") == compiled.lir.runtimeImports.end())
+        compiled.lir.runtimeImports.push_back("test.gc.pressure");
+
+    const auto emitted = emitModule(compiled.lir, x64SysVTarget());
+    require(emitted.success, "data-record operations re-emit with forced collection: " + emitted.error);
+    if (!emitted.success) return;
+    NativeRuntimeBindings bindings;
+    bindings["test.gc.pressure"] = reinterpret_cast<std::uintptr_t>(&nativeGcPressure);
+    NativeExecutable executable(emitted.functions, compiled.lir, bindings);
+    require(executable.ok(), "data-record runtime helpers bind: " + executable.error());
+    if (!executable.ok()) return;
+
+    auto runInt = [&](const std::string& name, std::int64_t expected) {
+        std::string error;
+        const std::size_t entry = executable.resolve(name, error);
+        require(entry != NativeExecutable::kNoEntry, name + " resolves: " + error);
+        if (entry == NativeExecutable::kNoEntry) return;
+        std::int64_t result = 0;
+        require(executable.callInt64(entry, {}, result, error), name + " executes: " + error);
+        require(result == expected, name + " returns " + std::to_string(expected));
+    };
+    runInt("integerField", 42);
+    runInt("booleanField", 1);
+    const auto collectionsBeforeNested = TracingGC::instance().counters().collections;
+    runInt("nestedField", 53);
+    const auto collectionsAfterNested = TracingGC::instance().counters().collections;
+    require(collectionsAfterNested > collectionsBeforeNested,
+            "nested data-record field survives forced collection through its parent object");
+
+    std::string error;
+    const std::size_t doubleEntry = executable.resolve("doubleField", error);
+    require(doubleEntry != NativeExecutable::kNoEntry, "doubleField resolves: " + error);
+    if (doubleEntry != NativeExecutable::kNoEntry) {
+        double result = 0.0;
+        require(executable.callDouble(doubleEntry, {}, result, error),
+                "doubleField executes: " + error);
+        require(std::abs(result - 5.75) < 1e-12, "doubleField returns 5.75");
+    }
+#endif
+}
+
 void testUnsupportedProgramDegrades() {
     bool ok = false;
     Module module = lowerSource("Greeter", R"(
@@ -1225,6 +1337,7 @@ int main() {
     // memory (macOS) failed to build with "use of undeclared identifier".
     testReferencePassThrough();
     testNativeSafepointRootPublication();
+    testNativeDataRecordFields();
 #endif
     testUnverifiedMirIsRefused();
     testNoEncoderIsSelectOnly();

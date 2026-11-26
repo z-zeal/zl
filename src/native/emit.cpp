@@ -223,12 +223,11 @@ struct FunctionEmitter {
         // A caller must keep the convention's shadow space at the top of its
         // own frame at the moment a `call` executes: a C-compiled callee may
         // legally spill into [rsp, rsp+shadowSpace). Emitted callees never
-        // write there (they touch only their own frame), and this tier emits
-        // no runtime calls or stack arguments yet, so the reservation is not
-        // observable today - but the moment a CallRuntime callee from the C
-        // world lands, a calling frame shorter than the shadow space would
-        // hand that callee the caller's saved rbp to clobber. Reserve it in
-        // every function that calls.
+        // write there (they touch only their own frame), and current runtime
+        // helpers fit in register arguments, so the reservation is not
+        // otherwise observable today. A calling frame shorter than the shadow
+        // space would hand a C callee the caller's saved rbp to clobber. Reserve
+        // it in every function that calls.
         bool hasCall = false;
         for (const auto& block : fn.blocks)
             for (const auto& ins : block.instructions)

@@ -172,13 +172,13 @@ Two decisions worth stating:
 
 * **Unknown fails closed toward `Reference`.** A type the mapping does not
   recognise is classified as a managed reference, never as an integer.
-* **`Reference` is carried, never used.** A reference may be a parameter, a local,
-  a block parameter, a return value, a call argument or a call result — moved,
-  stored, loaded, handed back. Every operation that would *use* one (equality,
-  concatenation, field access, a method call) is refused, because it belongs to
-  the runtime. Explicitly bound runtime calls are now allowed through the
-  safepoint bridge, which publishes the frame roots before the runtime can
-  collect; object operations remain outside the native subset. Details are in
+* **`Reference` is carried and narrowly used.** References move through
+  parameters, locals, calls and returns. Non-generic `data` records can be
+  allocated from record literals and their int, bool, double, and nested
+  data-record fields can be loaded and stored through the GC-aware runtime
+  bridge. Other uses — equality, concatenation, general-class fields, methods
+  and dynamic dispatch — remain refused. Every bridge call publishes frame
+  roots before a pending collection. Details are in
   [native-gc-map.md](native-gc-map.md).
 
 ## Calling convention
@@ -206,9 +206,9 @@ into; Win64: the ABI's shadow space). This was recorded as 0 for System V and
 asserted as such by a test; that was wrong, and it is fixed in both places.
 Every function that calls therefore reserves at least `shadowSpace` in its
 frame. The reservation is not observable today — emitted callees never write
-the shadow (they touch only their own frame), and the tier emits no runtime
-calls or stack arguments yet — but it is what makes a future `CallRuntime`
-callee from the C world safe instead of a saved-rbp clobber.
+the shadow (they touch only their own frame), and native helper calls still
+fit entirely in argument registers — but it makes the existing `CallRuntime`
+helpers safe instead of risking a saved-rbp clobber.
 
 Arguments beyond the register set are refused rather than mis-placed; stack
 argument passing is a stated gap, not an unstated one.
@@ -234,6 +234,8 @@ source lines, and the reference/integer distinction.
 A `CallRuntime` opcode exists beside `Call` for the same operation with a
 runtime callee. The distinction is kept precisely so that "what did this module
 fall back on?" is greppable, and `LirModule::runtimeImports` lists the answer.
+`LirModule::runtimeStrings` carries the class/field names referenced by native
+data-record helpers as stable indices, and `printLirModule` shows that table.
 
 ## The implemented subset
 
@@ -247,10 +249,11 @@ Deliberately small, and complete for what it claims:
 * `Load` / `Store` of primitive locals;
 * `Jump`, `Branch`, `Return`, `Unreachable`;
 * direct `Call` to another function that is itself in the subset;
-* references carried through all of the above — a reference parameter, local or
-  return value is moved like an integer of pointer width, and `FrameSlotInfo::
-  isReference` marks the slot for the frame's GC map. Using one is still a
-  refusal (below).
+* references carried through all of the above, plus allocation and field
+  access for non-generic `data` records: int/bool/double fields and nested data
+  records. The runtime helpers use the normal safepoint bridge, and
+  `FrameSlotInfo::isReference` marks every pointer-bearing slot and spill for
+  the conservative frame map.
 
 Correctness details that are tested rather than assumed:
 
@@ -311,12 +314,13 @@ Refusal also propagates: a function the subset accepted, which calls one it
 refused, is itself dropped — there would be no native body to jump to. This is
 iterated to a fixed point, so the surviving native set is closed under calls.
 
-Currently refused, each with its own message: any *use* of a reference —
-equality, concatenation, field access, a method call — and with it strings as
-constants, objects, collections, closures and lambdas, generic templates,
-constructors, `switch`, `throw` and exception handlers, async and tasks, static
-fields, non-GC ownership contracts, arguments beyond the register set, and
-branches into blocks with parameters (which need a split critical edge).
+Currently refused, each with its own message: reference equality and
+concatenation; field operations outside non-generic `data` records; general
+class allocation, constructors, and dynamic/method dispatch; strings as
+constants, collections, closures and lambdas, generic templates, `switch`,
+`throw` and exception handlers, async and tasks, static fields, non-GC ownership
+contracts, arguments beyond the register set, and branches into blocks with
+parameters (which need a split critical edge).
 
 ## Runtime calls
 
@@ -367,9 +371,10 @@ table, and non-x86-64-Linux hosts. The per-call bridge registers an active
 native frame and polls the GC coordinator; on collection, frame-map addresses
 are resolved against the managed allocation registry and published as typed
 roots. The regression forces collection after a runtime helper allocates and
-checks the object survives solely through its native spill. Remaining P1-6 work
-is object layout and field access, not root publication; see
-[native-gc-map.md](native-gc-map.md).
+checks the object survives solely through its native spill. The driver now
+also executes non-generic data-record literals and field operations; remaining
+P1-6 work is general class initialization/layout, methods and the broader
+mixed-mode path, not root publication. See [native-gc-map.md](native-gc-map.md).
 
 ## Tests
 
@@ -392,23 +397,21 @@ than asserting on.
 It covers the calling-convention invariants, the value-class mapping (including
 that unknown fails closed), integer and float arithmetic, all comparisons
 including the NaN cases, two-way branches, a counted loop through mutable slots,
-a cross-function direct call, division edge cases, reference carry (a
-parameter, a frame slot and a call argument each round-trip a pointer, while a
-reference *use* is refused), refusal of unsupported functions and of their
-callers, refusal of MIR that does not verify, and two end-to-end cases that
-lower real ZL source through the real front end.
+a cross-function direct call, division edge cases, reference carry, end-to-end
+allocation and field reads/writes for non-generic data records (including nested
+records surviving forced collection), refusal of unsupported record shapes and
+of callers whose callees were refused, refusal of MIR that does not verify, and
+real ZL source lowered through the real front end.
 
 ## What is deliberately missing
 
 Named so that no one has to discover them by reading the code: register
-allocation and stack argument passing, ZL-level object creation/layout and
-field access (the driver can root objects returned by explicitly bound runtime
-helpers, but source-level `new` and fields are still refused), unwind tables
-(hence an arithmetic fault in natively executed code is a SIGILL trap, not a
-catchable `ArithmeticError` — the VM remains the tier where those are
-catchable), object layout and field access, string and collection operations,
-closures, generic instantiation, jump tables for `switch`, a *general* loader
-— there is still no object-file writer and no JIT compiler emitting new code;
-the execution driver maps already-emitted bytes and nothing else (that is why
-the driver refuses GC-shaped signatures: it consumes the subset boundary, it
-does not extend it), and any target other than x86-64 System V.
+allocation and stack argument passing; general class construction, constructors,
+field defaults, inheritance layouts and dynamic method dispatch (the supported
+object subset is non-generic data records); unwind tables (hence an arithmetic
+fault in natively executed code is a SIGILL trap, not a catchable
+`ArithmeticError` — the VM remains the tier where those are catchable); string
+and collection operations, closures, generic instantiation, jump tables for
+`switch`, a *general* loader — there is still no object-file writer and no JIT
+compiler emitting new code; the execution driver maps already-emitted bytes and
+nothing else, and any target other than x86-64 System V.

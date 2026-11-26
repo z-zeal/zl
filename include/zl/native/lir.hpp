@@ -261,6 +261,10 @@ struct LirModule {
     // resolves these; listing them makes "what did this module fall back on?"
     // answerable without scanning the code.
     std::vector<std::string> runtimeImports;
+    // NUL-free strings used as runtime metadata (currently class and field
+    // names for the native object bridge). Instructions pass indices so code
+    // remains relocatable and each executable owns its metadata lifetime.
+    std::vector<std::string> runtimeStrings;
 };
 
 [[nodiscard]] std::string printLirModule(const LirModule& module);

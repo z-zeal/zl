@@ -1,5 +1,18 @@
 # Development Checkpoints
 
+## 2026-11-22 - execute non-generic data records in the native tier
+
+Instruction selection now lowers data-record allocation and typed field loads
+and stores to runtime bridge helpers. The LIR owns class/field string metadata;
+the helpers create GC-managed objects, validate addresses, preserve bool/int/
+double representations, and store nested data-record references through the
+VM's tracing-aware field accessors. The backend test executes real ZL source
+covering primitive and nested fields, then forces collection between nested
+field storage and load with the parent still rooted in a native frame. The
+maps remain conservative; this test checks the integrated path, not liveness
+precision. General class constructors/layout, field defaults, and dynamic
+dispatch remain open.
+
 ## 2026-11-22 - publish native frame roots across runtime allocations
 
 `NativeExecutable` now registers a safepoint participant for each active call.
@@ -10,8 +23,9 @@ and publishes typed roots to the existing coordinator. The driver supports a
 borrowed all-reference entry for internal integrations, while `--run-native`
 still accepts only scalar arguments. A forced-pressure regression allocates an
 object in a runtime helper and verifies it survives collection with its only
-root in a native spill. Language-level object layout and field access remain
-unimplemented.
+root in a native spill. At that checkpoint, language-level allocation and
+field operations remained unimplemented; the later non-generic data-record
+slice is recorded in the newer entry above.
 
 ## 2026-11-22 - export native frame layouts and conservative safepoint maps
 
